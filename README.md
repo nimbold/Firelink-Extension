@@ -6,9 +6,13 @@ This repository contains the standalone development files and releases for the F
 The Firelink Browser Extension is a companion to the Firelink macOS download manager. It intercepts downloads from the browser and captures download links from selected text, forwarding them directly to the native macOS app.
 
 ## Installation
-You can download the latest `.xpi` release from this repository and install it manually in Firefox:
-1. Go to `about:addons` in Firefox.
-2. Click the gear icon and select **Install Add-on From File...**
-3. Choose the `firelink.xpi` file.
+Currently, the extension is not yet verified by Mozilla. You will need to install it as a temporary add-on:
+1. Download the latest `.zip` release from the [Releases](https://github.com/nimbold/Firelink-Extension/releases) page.
+2. Extract the downloaded `.zip` file into a folder on your computer.
+3. Open Firefox and navigate to `about:debugging#/runtime/this-firefox` (or simply go to `about:debugging` and click **This Firefox** on the left).
+4. Click on **Load Temporary Add-on...**
+5. Select the `manifest.json` file from the folder you extracted in step 2.
+
+*Note: Because this is a temporary installation, you will need to repeat this process if you restart your browser.*
 
 *Note: This repository currently tracks the Firefox extension. Support for other browsers is planned for the future.*

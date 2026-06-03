@@ -1,0 +1,25 @@
+name: Release Extension
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Create ZIP Archive
+        run: zip -r firelink.zip background.js content.js icons manifest.json popup
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: firelink.zip
+          generate_release_notes: true
