@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Firelink",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Capture downloads and links directly to Firelink download manager.",
   "permissions": [
     "downloads",
@@ -27,7 +27,8 @@
   },
   "browser_specific_settings": {
     "gecko": {
-      "id": "firelink@nimbold.github.io"
+      "id": "firelink@nimbold.github.io",
+      "data_collection_permissions": false
     }
   }
 }
