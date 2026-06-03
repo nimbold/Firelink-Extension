@@ -35,7 +35,7 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
           const url = new URL(tabs[0].url);
           // Only show site toggle for valid http/https URLs
-          if (url.protocol.startsWith('http')) {
+          if (url.protocol === 'http:' || url.protocol === 'https:') {
             const hostname = url.hostname;
             hostnameSpan.textContent = hostname;
             

@@ -1,5 +1,6 @@
 // background.js
-const FIRELINK_SERVER_URL = "http://localhost:6412/download";
+const FIRELINK_SERVER_URL = "http://127.0.0.1:6412/download";
+const ALLOWED_SCHEMES = new Set(["http:", "https:", "ftp:", "sftp:"]);
 
 // Default settings
 const defaultSettings = {
@@ -29,26 +30,59 @@ chrome.runtime.onInstalled.addListener(() => {
   });
 });
 
+function normalizeURL(rawURL) {
+  if (typeof rawURL !== "string") {
+    return null;
+  }
+
+  const trimmed = rawURL.trim().replace(/^[<("'[]+|[>)"'\].,;:!?]+$/g, "");
+  try {
+    const url = new URL(trimmed);
+    return ALLOWED_SCHEMES.has(url.protocol) ? url.href : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+function extractURLsFromText(text) {
+  if (!text) {
+    return [];
+  }
+
+  const matches = text.match(/\b(?:https?|ftp|sftp):\/\/[^\s<>"']+/gi) || [];
+  return [...new Set(matches.map(normalizeURL).filter(Boolean))];
+}
+
+function normalizeURLList(urls) {
+  const rawURLs = Array.isArray(urls) ? urls : [urls];
+  return [...new Set(rawURLs.map(normalizeURL).filter(Boolean))];
+}
+
 // Function to send URLs to Firelink
 async function sendToFirelink(urls, referer = "") {
+  const normalizedURLs = normalizeURLList(urls);
+  if (normalizedURLs.length === 0) {
+    return false;
+  }
+
   try {
     const payload = {
-      urls: Array.isArray(urls) ? urls : [urls],
+      urls: normalizedURLs,
       referer: referer
     };
     
     // Attempt to send to Firelink local server
-    await fetch(FIRELINK_SERVER_URL, {
+    const response = await fetch(FIRELINK_SERVER_URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/json"
       },
       body: JSON.stringify(payload)
     });
-    console.log("Successfully sent to Firelink:", payload);
+    return response.ok;
   } catch (error) {
-    console.error("Failed to send to Firelink:", error);
-    // Fallback logic could go here
+    console.warn("Firelink is not accepting extension requests.");
+    return false;
   }
 }
 
@@ -64,17 +98,32 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
       target: { tabId: tab.id },
       files: ["content.js"]
     }, () => {
+      if (chrome.runtime.lastError) {
+        const urls = extractURLsFromText(info.selectionText);
+        if (urls.length > 0) {
+          sendToFirelink(urls, tab.url);
+        }
+        return;
+      }
+
       // Send a message to the content script to perform the extraction
       chrome.tabs.sendMessage(tab.id, { action: "extractSelectionLinks" }, (response) => {
+        if (chrome.runtime.lastError) {
+          const urls = extractURLsFromText(info.selectionText);
+          if (urls.length > 0) {
+            sendToFirelink(urls, tab.url);
+          }
+          return;
+        }
+
         if (response && response.links && response.links.length > 0) {
           sendToFirelink(response.links, tab.url);
         } else {
           // Fallback: If no links were found by the content script, try to parse the raw text
           if (info.selectionText) {
-            const urlRegex = /(https?:\/\/[^\s]+)/g;
-            const matches = info.selectionText.match(urlRegex);
-            if (matches && matches.length > 0) {
-              sendToFirelink(matches, tab.url);
+            const urls = extractURLsFromText(info.selectionText);
+            if (urls.length > 0) {
+              sendToFirelink(urls, tab.url);
             }
           }
         }
@@ -100,10 +149,10 @@ chrome.downloads.onCreated.addListener((downloadItem) => {
     const siteCaptureDisabled = siteToggles[hostname] === true;
 
     if (globalCapture && !siteCaptureDisabled) {
-      // Cancel the browser download
-      chrome.downloads.cancel(downloadItem.id, () => {
-        // Send to Firelink
-        sendToFirelink([downloadItem.url], downloadItem.referrer);
+      sendToFirelink([downloadItem.url], downloadItem.referrer).then((accepted) => {
+        if (accepted) {
+          chrome.downloads.cancel(downloadItem.id);
+        }
       });
     }
   });

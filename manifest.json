@@ -5,14 +5,13 @@
   "description": "Capture downloads and links directly to Firelink download manager.",
   "permissions": [
     "downloads",
-    "downloads.open",
     "contextMenus",
     "storage",
     "activeTab",
     "scripting"
   ],
   "host_permissions": [
-    "http://localhost:6412/*"
+    "http://127.0.0.1:6412/*"
   ],
   "background": {
     "scripts": ["background.js"]
