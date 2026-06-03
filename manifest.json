@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "Firelink",
+  "version": "1.0.0",
+  "description": "Capture downloads and links directly to Firelink download manager.",
+  "permissions": [
+    "downloads",
+    "downloads.open",
+    "contextMenus",
+    "storage",
+    "activeTab",
+    "scripting"
+  ],
+  "background": {
+    "scripts": ["background.js"]
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "Firelink"
+  },
+  "icons": {
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "firelink@nimbold.github.io"
+    }
+  }
+}

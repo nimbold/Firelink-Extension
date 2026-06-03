@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="background-blob"></div>
+  <div class="container">
+    <div class="header">
+      <img src="../icons/icon-48.png" alt="" class="logo" onerror="this.style.display='none'">
+      <div class="header-title-container">
+        <h2>Firelink</h2>
+      </div>
+      <button class="theme-toggle-btn" id="theme-toggle" aria-label="Toggle Theme">
+        <!-- Moon Icon -->
+        <svg id="moon-icon" viewBox="0 0 24 24" style="display: none;">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+        </svg>
+        <!-- Sun Icon -->
+        <svg id="sun-icon" viewBox="0 0 24 24" style="display: none;">
+          <circle cx="12" cy="12" r="5"></circle>
+          <line x1="12" y1="1" x2="12" y2="3"></line>
+          <line x1="12" y1="21" x2="12" y2="23"></line>
+          <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+          <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+          <line x1="1" y1="12" x2="3" y2="12"></line>
+          <line x1="21" y1="12" x2="23" y2="12"></line>
+          <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+          <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+        </svg>
+      </button>
+    </div>
+  
+  <div class="settings">
+    <div class="setting-row">
+      <div class="setting-info">
+        <span class="setting-title">Capture All Downloads</span>
+        <span class="setting-desc">Intercept browser downloads</span>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="global-toggle">
+        <span class="slider round"></span>
+      </label>
+    </div>
+
+    <div class="setting-row" id="site-setting-row">
+      <div class="setting-info">
+        <span class="setting-title">Disable on site</span>
+        <span class="setting-desc" id="current-hostname">...</span>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="site-toggle">
+        <span class="slider round"></span>
+      </label>
+    </div>
+  </div>
+
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
