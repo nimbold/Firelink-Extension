@@ -1,5 +1,6 @@
 // background.js
-const FIRELINK_SERVER_URL = "http://127.0.0.1:6412/download";
+const FIRELINK_PORTS = Array.from({ length: 11 }, (_, index) => 6412 + index);
+const FIRELINK_EXTENSION_TOKEN = "firelink-extension-v1";
 const ALLOWED_SCHEMES = new Set(["http:", "https:", "ftp:", "sftp:"]);
 
 // Default settings
@@ -71,15 +72,24 @@ async function sendToFirelink(urls, referer = "") {
       referer: referer
     };
     
-    // Attempt to send to Firelink local server
-    const response = await fetch(FIRELINK_SERVER_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(payload)
-    });
-    return response.ok;
+    for (const port of FIRELINK_PORTS) {
+      try {
+        const response = await fetch(`http://127.0.0.1:${port}/download`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Firelink-Extension": FIRELINK_EXTENSION_TOKEN
+          },
+          body: JSON.stringify(payload)
+        });
+        if (response.ok) {
+          return true;
+        }
+      } catch (error) {
+        // Try the next Firelink fallback port.
+      }
+    }
+    return false;
   } catch (error) {
     console.warn("Firelink is not accepting extension requests.");
     return false;
