@@ -1,4 +1,7 @@
-# Firelink Companion
+<div align="center">
+  <img src="icons/icon-128.png" alt="Firelink Companion Icon" width="128" height="128" />
+  <h1>Firelink Companion</h1>
+</div>
 
 This repository contains the standalone development files and releases for the Firelink Companion Firefox extension.
 
