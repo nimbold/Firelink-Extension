@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Firelink",
+  "name": "Firelink Companion",
   "version": "1.0.4",
   "description": "Capture downloads and links directly to Firelink download manager.",
   "permissions": [
@@ -28,7 +28,7 @@
   },
   "action": {
     "default_popup": "popup/popup.html",
-    "default_title": "Firelink"
+    "default_title": "Firelink Companion"
   },
   "icons": {
     "48": "icons/icon-48.png",

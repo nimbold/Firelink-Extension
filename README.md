@@ -1,12 +1,12 @@
-# Firelink Browser Extension
+# Firelink Companion
 
-This repository contains the standalone development files and releases for the Firelink Firefox extension. 
+This repository contains the standalone development files and releases for the Firelink Companion Firefox extension.
 
 ## Overview
-The Firelink Browser Extension is a companion to the Firelink macOS download manager. It intercepts downloads from the browser and captures download links from selected text, forwarding them directly to the native macOS app.
+Firelink Companion is a companion to the Firelink macOS download manager. It intercepts downloads from the browser and captures download links from selected text, forwarding them directly to the native macOS app.
 
 ## Installation
-Currently, the extension is not yet verified by Mozilla. You will need to install it as a temporary add-on:
+Firelink Companion has been submitted to Mozilla and is awaiting review. Until it is approved, install it as a temporary add-on:
 1. Download the latest `.zip` release from the [Releases](https://github.com/nimbold/Firelink-Extension/releases) page.
 2. Extract the downloaded `.zip` file into a folder on your computer.
 3. Open Firefox and navigate to `about:debugging#/runtime/this-firefox` (or simply go to `about:debugging` and click **This Firefox** on the left).
