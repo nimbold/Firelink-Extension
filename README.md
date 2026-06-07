@@ -3,19 +3,34 @@
   <h1>Firelink Companion</h1>
 </div>
 
-This repository contains the standalone development files and releases for the Firelink Companion Firefox extension.
+This repository contains the standalone development files and releases for the **Firelink Companion** browser extension.
 
-## Overview
-Firelink Companion is a companion to the Firelink macOS download manager. It intercepts downloads from the browser and captures download links from selected text, forwarding them directly to the native macOS app.
+---
 
-## Installation
-Firelink Companion has been submitted to Mozilla and is awaiting review. Until it is approved, install it as a temporary add-on:
-1. Download the latest `.zip` release from the [Releases](https://github.com/nimbold/Firelink-Extension/releases) page.
-2. Extract the downloaded `.zip` file into a folder on your computer.
-3. Open Firefox and navigate to `about:debugging#/runtime/this-firefox` (or simply go to `about:debugging` and click **This Firefox** on the left).
-4. Click on **Load Temporary Add-on...**
-5. Select the `manifest.json` file from the folder you extracted in step 2.
+## ⚡ Overview
 
-*Note: Because this is a temporary installation, you will need to repeat this process if you restart your browser.*
+Firelink Companion bridges the gap between your web browser and the native **[Firelink](https://github.com/nimbold/Firelink)** macOS download manager. 
 
-*Note: This repository currently tracks the Firefox extension. Support for other browsers is planned for the future.*
+It intelligently intercepts browser downloads, captures media URLs, and forwards them directly to the native app, allowing you to bypass your browser's default manager and harness the full power of Firelink's multi-segmented `aria2` and `yt-dlp` engines.
+
+---
+
+## 🚀 Installation
+
+We are officially live on the Mozilla Add-on store! 
+
+👉 **[Download Firelink Companion for Firefox](https://addons.mozilla.org/en-US/firefox/addon/firelink-companion/)**
+
+### Manual/Developer Installation
+If you wish to test unreleased features or modify the extension yourself:
+1. Download the latest source code or clone the repository.
+2. Open Firefox and navigate to `about:debugging#/runtime/this-firefox`.
+3. Click on **Load Temporary Add-on...**
+4. Select the `manifest.json` file from the directory.
+
+*Note: Temporary installations reset when you restart your browser. Support for Chrome/Safari is planned for the future.*
+
+---
+
+## 📄 License
+Released under the MIT License.
