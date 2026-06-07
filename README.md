@@ -19,7 +19,9 @@ It intelligently intercepts browser downloads, captures media URLs, and forwards
 
 We are officially live on the Mozilla Add-on store! 
 
-👉 **[Download Firelink Companion for Firefox](https://addons.mozilla.org/en-US/firefox/addon/firelink-companion/)**
+<div align="center">
+  <a href="https://addons.mozilla.org/en-US/firefox/addon/firelink-companion/"><img src="https://img.shields.io/badge/Install%20on%20Firefox-FF7139?logo=firefox-browser&logoColor=white&style=for-the-badge" alt="Install on Firefox" /></a>
+</div>
 
 ### Manual/Developer Installation
 If you wish to test unreleased features or modify the extension yourself:
