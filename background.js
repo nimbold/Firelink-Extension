@@ -82,7 +82,8 @@ function normalizeURLList(urls) {
 }
 
 // Function to send URLs to Firelink
-async function sendToFirelink(urls, referer = "") {
+async function sendToFirelink(urls, referer = "", options = {}) {
+  const allowProtocolFallback = options.allowProtocolFallback !== false;
   const normalizedURLs = normalizeURLList(urls);
   if (normalizedURLs.length === 0) {
     return false;
@@ -113,7 +114,7 @@ async function sendToFirelink(urls, referer = "") {
     return true;
   } catch (error) {
     // All local ports failed (app might be closed), fallback to deep link
-    if (normalizedURLs.length > 0) {
+    if (allowProtocolFallback && normalizedURLs.length > 0) {
       const appUrl = `firelink://add?url=${encodeURIComponent(normalizedURLs.join('\n'))}`;
       if (typeof document !== 'undefined') {
         const iframe = document.createElement('iframe');
@@ -180,7 +181,7 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 chrome.downloads.onCreated.addListener((downloadItem) => {
   const globalCapture = cachedSettings.globalCapture || false;
   const siteToggles = cachedSettings.siteToggles || {};
-  
+
   let hostname = "";
   try {
     hostname = new URL(downloadItem.referrer || downloadItem.url).hostname;
@@ -192,11 +193,12 @@ chrome.downloads.onCreated.addListener((downloadItem) => {
   const siteCaptureDisabled = siteToggles[hostname] === true;
 
   if (globalCapture && !siteCaptureDisabled) {
-    // Cancel synchronously immediately to eliminate the browser's native download UI flash
-    chrome.downloads.cancel(downloadItem.id, () => {
-      // Erase the download to prevent "Canceled" items from cluttering the browser UI
-      chrome.downloads.erase({ id: downloadItem.id });
+    sendToFirelink([downloadItem.url], downloadItem.referrer, { allowProtocolFallback: false }).then((accepted) => {
+      if (accepted) {
+        chrome.downloads.cancel(downloadItem.id, () => {
+          chrome.downloads.erase({ id: downloadItem.id });
+        });
+      }
     });
-    sendToFirelink([downloadItem.url], downloadItem.referrer);
   }
 });

@@ -9,7 +9,7 @@ This repository contains the standalone development files and releases for the *
 
 ## ⚡ Overview
 
-Firelink Companion bridges the gap between your web browser and the native **[Firelink](https://github.com/nimbold/Firelink)** macOS download manager. 
+Firelink Companion bridges the gap between your web browser and the native **[Firelink](https://github.com/nimbold/Firelink)** macOS download manager.
 
 It intelligently intercepts browser downloads, captures media URLs, and forwards them directly to the native app, allowing you to bypass your browser's default manager and harness the full power of Firelink's multi-segmented `aria2` and `yt-dlp` engines.
 
@@ -26,7 +26,7 @@ The extension has been updated to **v1.0.7** with the following improvements:
 
 ## 🚀 Installation
 
-We are officially live on the Mozilla Add-on store! 
+We are officially live on the Mozilla Add-on store!
 
 <div align="center">
   <a href="https://addons.mozilla.org/en-US/firefox/addon/firelink-companion/"><img src="https://img.shields.io/badge/Install%20on%20Firefox-FF7139?logo=firefox-browser&logoColor=white&style=for-the-badge" alt="Install on Firefox" /></a>
