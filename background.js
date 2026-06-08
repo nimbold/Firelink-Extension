@@ -91,7 +91,15 @@ async function sendToFirelink(urls, referer = "") {
     }
     if (normalizedURLs.length > 0) {
       const appUrl = `firelink://add?url=${encodeURIComponent(normalizedURLs[0])}`;
-      chrome.tabs.create({ url: appUrl, active: false });
+      if (typeof document !== 'undefined') {
+        const iframe = document.createElement('iframe');
+        iframe.style.display = 'none';
+        iframe.src = appUrl;
+        document.body.appendChild(iframe);
+        setTimeout(() => iframe.remove(), 5000);
+      } else {
+        chrome.tabs.create({ url: appUrl, active: false });
+      }
       return true;
     }
     return false;
