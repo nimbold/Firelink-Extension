@@ -1,4 +1,10 @@
 // background.js
+
+// IMPORTANT(Backward Compatibility):
+// When updating this extension to use a new Firelink API version (e.g., v2), ensure that the
+// main Firelink app's LocalExtensionServer continues to support older versions (like v1). 
+// Extension store approvals can take days, and during that time, older extensions MUST continue 
+// working with the newly updated Firelink app.
 const FIRELINK_PORTS = Array.from({ length: 11 }, (_, index) => 6412 + index);
 const FIRELINK_EXTENSION_TOKEN = "firelink-extension-v1";
 const ALLOWED_SCHEMES = new Set(["http:", "https:", "ftp:", "sftp:"]);
