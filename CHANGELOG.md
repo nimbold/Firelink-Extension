@@ -1,3 +1,9 @@
+# Changelog
+
+All notable changes to Firelink Companion will be documented in this file.
+
+## [1.0.8] - 2026-06-08
+
 ### New Features
 - No new user-facing features in this patch release.
 

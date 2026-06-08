@@ -5,6 +5,11 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, for example 1.0.8"
+        required: true
+        default: "1.0.8"
 
 jobs:
   release:
@@ -18,8 +23,36 @@ jobs:
       - name: Create ZIP Archive
         run: zip -r firelink.zip background.js content.js icons manifest.json popup
 
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
-        with:
-          files: firelink.zip
-          generate_release_notes: true
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+            TAG_NAME="${GITHUB_REF_NAME}"
+          else
+            VERSION="${{ inputs.version }}"
+            TAG_NAME="v${VERSION}"
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Extract release notes
+        shell: bash
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          awk '/^## \['"$VERSION"'\]/{flag=1; next} /^## \[/{if(flag) exit} flag' CHANGELOG.md > release_notes.md
+          test -s release_notes.md
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ steps.version.outputs.tag_name }}
+        run: |
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release upload "$TAG_NAME" firelink.zip --clobber
+            gh release edit "$TAG_NAME" --notes-file release_notes.md
+          else
+            gh release create "$TAG_NAME" firelink.zip --title "$TAG_NAME" --notes-file release_notes.md --verify-tag
+          fi
