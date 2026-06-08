@@ -15,6 +15,15 @@ It intelligently intercepts browser downloads, captures media URLs, and forwards
 
 ---
 
+## 🌟 Current Status (v1.0.7)
+
+The extension has been updated to **v1.0.7** with the following improvements:
+- **Optimized Communication & UI**: Reduced latency when communicating with the native app and optimized popup UI for better user experience.
+- **Robustness & Compatibility**: Hardened the local bridge and added backward compatibility measures to ensure the extension continues to work seamlessly with future Firelink native app updates.
+- **Seamless Interception**: Uses hidden iframes to launch the custom protocol, preventing blank tabs when capturing links.
+
+---
+
 ## 🚀 Installation
 
 We are officially live on the Mozilla Add-on store! 
