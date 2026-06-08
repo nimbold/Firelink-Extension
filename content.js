@@ -32,7 +32,7 @@
 
           const anchors = container.querySelectorAll("a");
           anchors.forEach(a => {
-            const url = normalizedDownloadURL(a.getAttribute("href"));
+            const url = normalizedDownloadURL(a.href);
             if (url) {
               links.add(url);
             }

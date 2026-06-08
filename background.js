@@ -90,7 +90,7 @@ async function sendToFirelink(urls, referer = "") {
       }
     }
     if (normalizedURLs.length > 0) {
-      const appUrl = `firelink://add?url=${encodeURIComponent(normalizedURLs[0])}`;
+      const appUrl = `firelink://add?url=${encodeURIComponent(normalizedURLs.join('\n'))}`;
       if (typeof document !== 'undefined') {
         const iframe = document.createElement('iframe');
         iframe.style.display = 'none';

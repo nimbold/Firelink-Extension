@@ -5,6 +5,36 @@ document.addEventListener('DOMContentLoaded', () => {
   const themeToggleBtn = document.getElementById('theme-toggle');
   const sunIcon = document.getElementById('sun-icon');
   const moonIcon = document.getElementById('moon-icon');
+  const statusIndicator = document.getElementById('connection-status');
+  const statusText = statusIndicator.querySelector('.status-text');
+
+  // Check connection to Firelink
+  async function checkConnection() {
+    const FIRELINK_PORTS = Array.from({ length: 11 }, (_, index) => 6412 + index);
+    for (const port of FIRELINK_PORTS) {
+      try {
+        const response = await fetch(`http://127.0.0.1:${port}/download`, {
+          method: "OPTIONS",
+          headers: {
+            "X-Firelink-Extension": "firelink-extension-v1"
+          }
+        });
+        if (response.ok || response.status === 204) {
+          statusIndicator.classList.remove('disconnected');
+          statusIndicator.classList.add('connected');
+          statusText.textContent = 'App connected';
+          return;
+        }
+      } catch (error) {
+        // Try next port
+      }
+    }
+    statusIndicator.classList.remove('connected');
+    statusIndicator.classList.add('disconnected');
+    statusText.textContent = 'App closed';
+  }
+
+  checkConnection();
 
   // Apply theme function
   const applyTheme = (theme) => {

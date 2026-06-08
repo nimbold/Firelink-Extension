@@ -135,6 +135,35 @@ h2 {
   background-clip: text;
 }
 
+.status-indicator {
+  display: flex;
+  align-items: center;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  transition: color 0.3s ease;
+}
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: #8e8e93; /* Default checking color */
+  margin-right: 6px;
+  box-shadow: 0 0 4px rgba(142, 142, 147, 0.5);
+  transition: background-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.status-indicator.connected .status-dot {
+  background-color: #34c759;
+  box-shadow: 0 0 6px rgba(52, 199, 89, 0.6);
+}
+
+.status-indicator.disconnected .status-dot {
+  background-color: #ff3b30;
+  box-shadow: 0 0 6px rgba(255, 59, 48, 0.6);
+}
+
 .theme-toggle-btn {
   background: transparent;
   border: none;
