@@ -89,6 +89,11 @@ async function sendToFirelink(urls, referer = "") {
         // Try the next Firelink fallback port.
       }
     }
+    if (normalizedURLs.length > 0) {
+      const appUrl = `firelink://add?url=${encodeURIComponent(normalizedURLs[0])}`;
+      chrome.tabs.create({ url: appUrl, active: false });
+      return true;
+    }
     return false;
   } catch (error) {
     console.warn("Firelink is not accepting extension requests.");
