@@ -11,9 +11,25 @@ const ALLOWED_SCHEMES = new Set(["http:", "https:", "ftp:", "sftp:"]);
 
 // Default settings
 const defaultSettings = {
-  globalCapture: false,
+  globalCapture: true,
   siteToggles: {} // hostname -> boolean (true if capture is disabled for this site)
 };
+
+// Cached settings for synchronous access
+let cachedSettings = { ...defaultSettings };
+
+// Sync settings
+chrome.storage.local.get(['globalCapture', 'siteToggles'], (result) => {
+  if (result.globalCapture !== undefined) cachedSettings.globalCapture = result.globalCapture;
+  if (result.siteToggles !== undefined) cachedSettings.siteToggles = result.siteToggles;
+});
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local') {
+    if (changes.globalCapture) cachedSettings.globalCapture = changes.globalCapture.newValue;
+    if (changes.siteToggles) cachedSettings.siteToggles = changes.siteToggles.newValue;
+  }
+});
 
 // Initialize settings
 chrome.runtime.onInstalled.addListener(() => {
@@ -72,29 +88,31 @@ async function sendToFirelink(urls, referer = "") {
     return false;
   }
 
+  const payload = {
+    urls: normalizedURLs,
+    referer: referer
+  };
+
   try {
-    const payload = {
-      urls: normalizedURLs,
-      referer: referer
-    };
-    
-    for (const port of FIRELINK_PORTS) {
-      try {
-        const response = await fetch(`http://127.0.0.1:${port}/download`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Firelink-Extension": FIRELINK_EXTENSION_TOKEN
-          },
-          body: JSON.stringify(payload)
-        });
-        if (response.ok) {
-          return true;
-        }
-      } catch (error) {
-        // Try the next Firelink fallback port.
-      }
-    }
+    const fetchPromises = FIRELINK_PORTS.map(port =>
+      fetch(`http://127.0.0.1:${port}/download`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Firelink-Extension": FIRELINK_EXTENSION_TOKEN
+        },
+        body: JSON.stringify(payload)
+      }).then(res => {
+        if (!res.ok) throw new Error("Not OK");
+        return true;
+      })
+    );
+
+    // Fire all requests concurrently and resolve as soon as one succeeds
+    await Promise.any(fetchPromises);
+    return true;
+  } catch (error) {
+    // All local ports failed (app might be closed), fallback to deep link
     if (normalizedURLs.length > 0) {
       const appUrl = `firelink://add?url=${encodeURIComponent(normalizedURLs.join('\n'))}`;
       if (typeof document !== 'undefined') {
@@ -108,9 +126,6 @@ async function sendToFirelink(urls, referer = "") {
       }
       return true;
     }
-    return false;
-  } catch (error) {
-    console.warn("Firelink is not accepting extension requests.");
     return false;
   }
 }
@@ -163,26 +178,25 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 
 // Listen for downloads
 chrome.downloads.onCreated.addListener((downloadItem) => {
-  chrome.storage.local.get(['globalCapture', 'siteToggles'], (settings) => {
-    const globalCapture = settings.globalCapture || false;
-    const siteToggles = settings.siteToggles || {};
-    
-    let hostname = "";
-    try {
-      hostname = new URL(downloadItem.referrer || downloadItem.url).hostname;
-    } catch (e) {
-      // Invalid URL
-    }
+  const globalCapture = cachedSettings.globalCapture || false;
+  const siteToggles = cachedSettings.siteToggles || {};
+  
+  let hostname = "";
+  try {
+    hostname = new URL(downloadItem.referrer || downloadItem.url).hostname;
+  } catch (e) {
+    // Invalid URL
+  }
 
-    // Check if capture is disabled for this specific site
-    const siteCaptureDisabled = siteToggles[hostname] === true;
+  // Check if capture is disabled for this specific site
+  const siteCaptureDisabled = siteToggles[hostname] === true;
 
-    if (globalCapture && !siteCaptureDisabled) {
-      sendToFirelink([downloadItem.url], downloadItem.referrer).then((accepted) => {
-        if (accepted) {
-          chrome.downloads.cancel(downloadItem.id);
-        }
-      });
-    }
-  });
+  if (globalCapture && !siteCaptureDisabled) {
+    // Cancel synchronously immediately to eliminate the browser's native download UI flash
+    chrome.downloads.cancel(downloadItem.id, () => {
+      // Erase the download to prevent "Canceled" items from cluttering the browser UI
+      chrome.downloads.erase({ id: downloadItem.id });
+    });
+    sendToFirelink([downloadItem.url], downloadItem.referrer);
+  }
 });
