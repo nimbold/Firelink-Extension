@@ -15,14 +15,14 @@ It intelligently intercepts browser downloads, captures media URLs, and forwards
 
 ---
 
-## 🌟 Current Status (v1.0.10)
+## 🌟 Current Status (v1.0.11)
 
-The extension has been updated to **v1.0.10** with the current Firelink app bridge:
-- **Secure Pairing**: The extension now uses the pairing token shown in Firelink's Integration settings instead of a static shared token.
+The extension has been updated to **v1.0.11** with robust performance and security enhancements:
+- **Firefox MV3 Optimized**: 100% compliant with strict Manifest V3 Content Security Policies and optimized Event Page architectures.
+- **Zero Race Conditions**: Secure async state handling guarantees your capture settings are strictly respected even upon background wakeup.
+- **Duplicate Prevention**: Intelligently pauses browser downloads while pinging Firelink to guarantee no duplicate files are saved.
+- **Secure Pairing**: Uses a dynamic pairing token instead of a static shared token to securely authenticate with Firelink.
 - **Connection Check**: The popup verifies the local app through `/ping` and clearly shows connected, offline, setup-required, and invalid-token states.
-- **Safe Capture**: Browser downloads are canceled only after the native app confirms the handoff.
-- **Polished Setup**: The pairing field is styled with the rest of the popup and masks the saved token by default.
-- **Manual App Updates**: Firelink app updates are handled through GitHub Releases; the extension remains a separate browser add-on release.
 
 ---
 

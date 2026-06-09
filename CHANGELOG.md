@@ -2,6 +2,13 @@
 
 All notable changes to Firelink Companion will be documented in this file.
 
+## [1.0.11] - 2026-06-10
+
+### Fixes
+- Fix Manifest V3 service worker/event page state race condition to ensure user settings (like disabling global capture) are strictly respected upon wakeup.
+- Pause browser downloads while pinging the Firelink app to reliably prevent duplicate files from being downloaded.
+- Remove inline `onerror` attribute in the popup to ensure 100% compliance with Firefox's strict Manifest V3 Content Security Policy (CSP).
+
 ## [1.0.10] - 2026-06-09
 
 ### Improvements
