@@ -84,6 +84,28 @@ function normalizeURLList(urls) {
 // Function to send URLs to Firelink
 async function sendToFirelink(urls, referer = "", options = {}) {
   const silent = options.silent === true;
+  const allowProtocolFallback = options.allowProtocolFallback !== false;
+  const normalizedURLs = normalizeURLList(urls);
+  if (normalizedURLs.length === 0) {
+    return false;
+  }
+
+  const triggerDeepLink = () => {
+    if (allowProtocolFallback) {
+      const appUrl = `firelink://add?url=${encodeURIComponent(normalizedURLs.join('\n'))}`;
+      if (typeof document !== 'undefined') {
+        const iframe = document.createElement('iframe');
+        iframe.style.display = 'none';
+        iframe.src = appUrl;
+        document.body.appendChild(iframe);
+        setTimeout(() => iframe.remove(), 5000);
+      } else {
+        chrome.tabs.create({ url: appUrl, active: false });
+      }
+      return true;
+    }
+    return false;
+  };
 
   if (!cachedSettings.extensionToken) {
     if (!silent) {
@@ -94,12 +116,7 @@ async function sendToFirelink(urls, referer = "", options = {}) {
         message: "Please click the Firelink extension icon and paste your pairing token to connect."
       });
     }
-    return false;
-  }
-  const allowProtocolFallback = options.allowProtocolFallback !== false;
-  const normalizedURLs = normalizeURLList(urls);
-  if (normalizedURLs.length === 0) {
-    return false;
+    return triggerDeepLink();
   }
 
   const payload = {
@@ -143,20 +160,7 @@ async function sendToFirelink(urls, referer = "", options = {}) {
     }
 
     // All local ports failed (app might be closed), fallback to deep link
-    if (allowProtocolFallback && normalizedURLs.length > 0) {
-      const appUrl = `firelink://add?url=${encodeURIComponent(normalizedURLs.join('\n'))}`;
-      if (typeof document !== 'undefined') {
-        const iframe = document.createElement('iframe');
-        iframe.style.display = 'none';
-        iframe.src = appUrl;
-        document.body.appendChild(iframe);
-        setTimeout(() => iframe.remove(), 5000);
-      } else {
-        chrome.tabs.create({ url: appUrl, active: false });
-      }
-      return true;
-    }
-    return false;
+    return triggerDeepLink();
   }
 }
 
@@ -222,7 +226,7 @@ chrome.downloads.onCreated.addListener((downloadItem) => {
   const siteCaptureDisabled = siteToggles[hostname] === true;
 
   if (globalCapture && !siteCaptureDisabled) {
-    sendToFirelink([downloadItem.url], downloadItem.referrer, { allowProtocolFallback: false, silent: true }).then((accepted) => {
+    sendToFirelink([downloadItem.url], downloadItem.referrer, { allowProtocolFallback: true, silent: true }).then((accepted) => {
       if (accepted) {
         chrome.downloads.cancel(downloadItem.id, () => {
           chrome.downloads.erase({ id: downloadItem.id });
