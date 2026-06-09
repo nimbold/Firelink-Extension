@@ -17,7 +17,7 @@ document.addEventListener('DOMContentLoaded', () => {
   async function checkConnection() {
     const FIRELINK_PORTS = Array.from({ length: 11 }, (_, index) => 6412 + index);
     const token = tokenInput.value.trim();
-    
+
     if (!token) {
       statusIndicator.classList.remove('connected');
       statusIndicator.classList.add('disconnected');
@@ -38,8 +38,8 @@ document.addEventListener('DOMContentLoaded', () => {
           statusIndicator.classList.remove('disconnected');
           statusIndicator.classList.add('connected');
           statusText.textContent = 'App connected';
-          
-          pairingContent.style.display = 'none';
+
+          pairingContent.classList.add('is-collapsed');
           pairingToggleBtn.textContent = '▼';
           pairingDesc.textContent = 'Connected securely';
           return;
@@ -47,8 +47,8 @@ document.addEventListener('DOMContentLoaded', () => {
           statusIndicator.classList.remove('connected');
           statusIndicator.classList.add('disconnected');
           statusText.textContent = 'Invalid token';
-          
-          pairingContent.style.display = 'flex';
+
+          pairingContent.classList.remove('is-collapsed');
           pairingToggleBtn.textContent = '▲';
           pairingDesc.textContent = 'Invalid token. Please update.';
           return;
@@ -81,13 +81,13 @@ document.addEventListener('DOMContentLoaded', () => {
   chrome.storage.local.get(['globalCapture', 'siteToggles', 'theme', 'extensionToken'], (result) => {
     globalToggle.checked = result.globalCapture || false;
     tokenInput.value = result.extensionToken || "";
-    
+
     if (result.extensionToken) {
-      pairingContent.style.display = 'none';
+      pairingContent.classList.add('is-collapsed');
       pairingToggleBtn.textContent = '▼';
       pairingDesc.textContent = 'Checking connection...';
     } else {
-      pairingContent.style.display = 'flex';
+      pairingContent.classList.remove('is-collapsed');
       pairingToggleBtn.textContent = '▲';
       pairingDesc.textContent = 'Paste the token from Firelink App';
     }
@@ -141,11 +141,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Handle pairing toggle click
   pairingToggleBtn.addEventListener('click', () => {
-    if (pairingContent.style.display === 'none') {
-      pairingContent.style.display = 'flex';
+    if (pairingContent.classList.contains('is-collapsed')) {
+      pairingContent.classList.remove('is-collapsed');
       pairingToggleBtn.textContent = '▲';
     } else {
-      pairingContent.style.display = 'none';
+      pairingContent.classList.add('is-collapsed');
       pairingToggleBtn.textContent = '▼';
     }
   });

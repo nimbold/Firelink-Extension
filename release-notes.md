@@ -1,11 +1,6 @@
-### New Features
-- No new user-facing features in this patch release.
-
 ### Improvements
-- Keep manual "Download with Firelink" actions resilient by preserving the custom protocol fallback when the local Firelink API is unavailable.
+- Polish the pairing-token popup UI by moving inline styles into the extension stylesheet and masking the token input by default.
+- Document that Firelink app updates now use GitHub Releases while the browser extension remains a separate add-on release.
 
 ### Changes
-- Use the changelog entry for GitHub release page descriptions so published release notes match the source tree.
-
-### Fixes
-- Prevent global download capture from canceling or erasing the browser download unless the native Firelink app confirms the local API handoff.
+- Remove stale references to the old static `firelink-extension-v1` token from the background script.

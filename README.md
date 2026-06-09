@@ -15,12 +15,14 @@ It intelligently intercepts browser downloads, captures media URLs, and forwards
 
 ---
 
-## 🌟 Current Status (v1.0.7)
+## 🌟 Current Status (v1.0.10)
 
-The extension has been updated to **v1.0.7** with the following improvements:
-- **Optimized Communication & UI**: Reduced latency when communicating with the native app and optimized popup UI for better user experience.
-- **Robustness & Compatibility**: Hardened the local bridge and added backward compatibility measures to ensure the extension continues to work seamlessly with future Firelink native app updates.
-- **Seamless Interception**: Uses hidden iframes to launch the custom protocol, preventing blank tabs when capturing links.
+The extension has been updated to **v1.0.10** with the current Firelink app bridge:
+- **Secure Pairing**: The extension now uses the pairing token shown in Firelink's Integration settings instead of a static shared token.
+- **Connection Check**: The popup verifies the local app through `/ping` and clearly shows connected, offline, setup-required, and invalid-token states.
+- **Safe Capture**: Browser downloads are canceled only after the native app confirms the handoff.
+- **Polished Setup**: The pairing field is styled with the rest of the popup and masks the saved token by default.
+- **Manual App Updates**: Firelink app updates are handled through GitHub Releases; the extension remains a separate browser add-on release.
 
 ---
 
@@ -38,6 +40,7 @@ If you wish to test unreleased features or modify the extension yourself:
 2. Open Firefox and navigate to `about:debugging#/runtime/this-firefox`.
 3. Click on **Load Temporary Add-on...**
 4. Select the `manifest.json` file from the directory.
+5. Open Firelink Settings → Integration, copy the pairing token, then paste it into the extension popup.
 
 *Note: Temporary installations reset when you restart your browser. Support for Chrome/Safari is planned for the future.*
 

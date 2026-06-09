@@ -242,6 +242,81 @@ h2 {
   color: var(--text-hover);
 }
 
+.pairing-row {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.pairing-header {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.pairing-toggle-btn {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 4px;
+  font-size: 10px;
+  line-height: 1;
+  border-radius: 6px;
+}
+
+.pairing-toggle-btn:hover {
+  background-color: var(--icon-hover);
+  color: var(--text-primary);
+}
+
+.pairing-content {
+  width: 100%;
+  display: flex;
+  gap: 8px;
+}
+
+.pairing-content.is-collapsed {
+  display: none;
+}
+
+#extension-token {
+  flex: 1;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--row-border);
+  background: var(--bg-color);
+  color: var(--text-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+#extension-token:focus {
+  outline: 2px solid rgba(255, 45, 85, 0.45);
+  outline-offset: 2px;
+}
+
+#save-token-btn {
+  appearance: none;
+  border: 0;
+  border-radius: 8px;
+  background: #ff2d55;
+  color: #ffffff;
+  cursor: pointer;
+  font-weight: 600;
+  min-width: 60px;
+  padding: 8px 12px;
+}
+
+#save-token-btn:hover {
+  filter: brightness(1.08);
+}
+
 #current-hostname {
   color: #ff9500;
   font-weight: 500;
