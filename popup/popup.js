@@ -7,22 +7,50 @@ document.addEventListener('DOMContentLoaded', () => {
   const moonIcon = document.getElementById('moon-icon');
   const statusIndicator = document.getElementById('connection-status');
   const statusText = statusIndicator.querySelector('.status-text');
+  const tokenInput = document.getElementById('extension-token');
+  const saveTokenBtn = document.getElementById('save-token-btn');
+  const pairingContent = document.getElementById('pairing-content');
+  const pairingToggleBtn = document.getElementById('pairing-toggle-btn');
+  const pairingDesc = document.getElementById('pairing-desc');
 
   // Check connection to Firelink
   async function checkConnection() {
     const FIRELINK_PORTS = Array.from({ length: 11 }, (_, index) => 6412 + index);
+    const token = tokenInput.value.trim();
+    
+    if (!token) {
+      statusIndicator.classList.remove('connected');
+      statusIndicator.classList.add('disconnected');
+      statusText.textContent = 'Setup required';
+      pairingDesc.textContent = 'Paste the token from Firelink App';
+      return;
+    }
+
     for (const port of FIRELINK_PORTS) {
       try {
-        const response = await fetch(`http://127.0.0.1:${port}/download`, {
-          method: "OPTIONS",
+        const response = await fetch(`http://127.0.0.1:${port}/ping`, {
+          method: "GET",
           headers: {
-            "X-Firelink-Extension": "firelink-extension-v1"
+            "X-Firelink-Extension": token
           }
         });
-        if (response.ok || response.status === 204) {
+        if (response.ok) {
           statusIndicator.classList.remove('disconnected');
           statusIndicator.classList.add('connected');
           statusText.textContent = 'App connected';
+          
+          pairingContent.style.display = 'none';
+          pairingToggleBtn.textContent = '▼';
+          pairingDesc.textContent = 'Connected securely';
+          return;
+        } else if (response.status === 403) {
+          statusIndicator.classList.remove('connected');
+          statusIndicator.classList.add('disconnected');
+          statusText.textContent = 'Invalid token';
+          
+          pairingContent.style.display = 'flex';
+          pairingToggleBtn.textContent = '▲';
+          pairingDesc.textContent = 'Invalid token. Please update.';
           return;
         }
       } catch (error) {
@@ -32,9 +60,10 @@ document.addEventListener('DOMContentLoaded', () => {
     statusIndicator.classList.remove('connected');
     statusIndicator.classList.add('disconnected');
     statusText.textContent = 'App closed';
+    if (token) {
+      pairingDesc.textContent = 'Token saved. App is offline.';
+    }
   }
-
-  checkConnection();
 
   // Apply theme function
   const applyTheme = (theme) => {
@@ -49,8 +78,19 @@ document.addEventListener('DOMContentLoaded', () => {
   };
 
   // Load current settings including theme
-  chrome.storage.local.get(['globalCapture', 'siteToggles', 'theme'], (result) => {
+  chrome.storage.local.get(['globalCapture', 'siteToggles', 'theme', 'extensionToken'], (result) => {
     globalToggle.checked = result.globalCapture || false;
+    tokenInput.value = result.extensionToken || "";
+    
+    if (result.extensionToken) {
+      pairingContent.style.display = 'none';
+      pairingToggleBtn.textContent = '▼';
+      pairingDesc.textContent = 'Checking connection...';
+    } else {
+      pairingContent.style.display = 'flex';
+      pairingToggleBtn.textContent = '▲';
+      pairingDesc.textContent = 'Paste the token from Firelink App';
+    }
 
     // Determine initial theme
     let currentTheme = result.theme;
@@ -80,11 +120,34 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       }
     });
+
+    // Check connection only after token is loaded
+    checkConnection();
   });
 
   // Handle global toggle change
   globalToggle.addEventListener('change', (e) => {
     chrome.storage.local.set({ globalCapture: e.target.checked });
+  });
+
+  // Handle save token click
+  saveTokenBtn.addEventListener('click', () => {
+    chrome.storage.local.set({ extensionToken: tokenInput.value.trim() }, () => {
+      saveTokenBtn.textContent = "Saved!";
+      setTimeout(() => { saveTokenBtn.textContent = "Save"; }, 2000);
+      checkConnection();
+    });
+  });
+
+  // Handle pairing toggle click
+  pairingToggleBtn.addEventListener('click', () => {
+    if (pairingContent.style.display === 'none') {
+      pairingContent.style.display = 'flex';
+      pairingToggleBtn.textContent = '▲';
+    } else {
+      pairingContent.style.display = 'none';
+      pairingToggleBtn.textContent = '▼';
+    }
   });
 
   // Handle theme toggle change

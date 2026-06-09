@@ -12,22 +12,25 @@ const ALLOWED_SCHEMES = new Set(["http:", "https:", "ftp:", "sftp:"]);
 // Default settings
 const defaultSettings = {
   globalCapture: true,
-  siteToggles: {} // hostname -> boolean (true if capture is disabled for this site)
+  siteToggles: {}, // hostname -> boolean (true if capture is disabled for this site)
+  extensionToken: "" // Empty by default
 };
 
 // Cached settings for synchronous access
 let cachedSettings = { ...defaultSettings };
 
 // Sync settings
-chrome.storage.local.get(['globalCapture', 'siteToggles'], (result) => {
+chrome.storage.local.get(['globalCapture', 'siteToggles', 'extensionToken'], (result) => {
   if (result.globalCapture !== undefined) cachedSettings.globalCapture = result.globalCapture;
   if (result.siteToggles !== undefined) cachedSettings.siteToggles = result.siteToggles;
+  if (result.extensionToken !== undefined) cachedSettings.extensionToken = result.extensionToken;
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local') {
     if (changes.globalCapture) cachedSettings.globalCapture = changes.globalCapture.newValue;
     if (changes.siteToggles) cachedSettings.siteToggles = changes.siteToggles.newValue;
+    if (changes.extensionToken) cachedSettings.extensionToken = changes.extensionToken.newValue;
   }
 });
 
@@ -83,6 +86,15 @@ function normalizeURLList(urls) {
 
 // Function to send URLs to Firelink
 async function sendToFirelink(urls, referer = "", options = {}) {
+  if (!cachedSettings.extensionToken) {
+    chrome.notifications.create({
+      type: "basic",
+      iconUrl: "icons/icon-128.png",
+      title: "Firelink Setup Required",
+      message: "Please click the Firelink extension icon and paste your pairing token to connect."
+    });
+    return false;
+  }
   const allowProtocolFallback = options.allowProtocolFallback !== false;
   const normalizedURLs = normalizeURLList(urls);
   if (normalizedURLs.length === 0) {
@@ -100,10 +112,13 @@ async function sendToFirelink(urls, referer = "", options = {}) {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "X-Firelink-Extension": FIRELINK_EXTENSION_TOKEN
+          "X-Firelink-Extension": cachedSettings.extensionToken
         },
         body: JSON.stringify(payload)
       }).then(res => {
+        if (res.status === 403) {
+          throw new Error("FORBIDDEN");
+        }
         if (!res.ok) throw new Error("Not OK");
         return true;
       })
@@ -113,6 +128,17 @@ async function sendToFirelink(urls, referer = "", options = {}) {
     await Promise.any(fetchPromises);
     return true;
   } catch (error) {
+    // If the app explicitly rejected the token, DO NOT fallback to deep link
+    if (error.errors && error.errors.some(e => e.message === "FORBIDDEN")) {
+      chrome.notifications.create({
+        type: "basic",
+        iconUrl: "icons/icon-128.png",
+        title: "Firelink Connection Rejected",
+        message: "Your pairing token is invalid. Please update the token in the Firelink extension popup."
+      });
+      return false;
+    }
+
     // All local ports failed (app might be closed), fallback to deep link
     if (allowProtocolFallback && normalizedURLs.length > 0) {
       const appUrl = `firelink://add?url=${encodeURIComponent(normalizedURLs.join('\n'))}`;
