@@ -2,6 +2,14 @@
 
 All notable changes to Firelink Companion will be documented in this file.
 
+## [1.0.9] - 2026-06-09
+
+### Improvements
+- Update connection check to correctly handle empty pairing tokens by displaying a "Setup Required" state.
+
+### Fixes
+- Fix notification spam by suppressing the "Firelink Setup Required" alert on automatic background downloads when the token is missing.
+
 ## [1.0.8] - 2026-06-08
 
 ### New Features
