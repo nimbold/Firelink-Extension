@@ -86,13 +86,17 @@ function normalizeURLList(urls) {
 
 // Function to send URLs to Firelink
 async function sendToFirelink(urls, referer = "", options = {}) {
+  const silent = options.silent === true;
+  
   if (!cachedSettings.extensionToken) {
-    chrome.notifications.create({
-      type: "basic",
-      iconUrl: "icons/icon-128.png",
-      title: "Firelink Setup Required",
-      message: "Please click the Firelink extension icon and paste your pairing token to connect."
-    });
+    if (!silent) {
+      chrome.notifications.create({
+        type: "basic",
+        iconUrl: "icons/icon-128.png",
+        title: "Firelink Setup Required",
+        message: "Please click the Firelink extension icon and paste your pairing token to connect."
+      });
+    }
     return false;
   }
   const allowProtocolFallback = options.allowProtocolFallback !== false;
@@ -130,12 +134,14 @@ async function sendToFirelink(urls, referer = "", options = {}) {
   } catch (error) {
     // If the app explicitly rejected the token, DO NOT fallback to deep link
     if (error.errors && error.errors.some(e => e.message === "FORBIDDEN")) {
-      chrome.notifications.create({
-        type: "basic",
-        iconUrl: "icons/icon-128.png",
-        title: "Firelink Connection Rejected",
-        message: "Your pairing token is invalid. Please update the token in the Firelink extension popup."
-      });
+      if (!silent) {
+        chrome.notifications.create({
+          type: "basic",
+          iconUrl: "icons/icon-128.png",
+          title: "Firelink Connection Rejected",
+          message: "Your pairing token is invalid. Please update the token in the Firelink extension popup."
+        });
+      }
       return false;
     }
 
@@ -219,7 +225,7 @@ chrome.downloads.onCreated.addListener((downloadItem) => {
   const siteCaptureDisabled = siteToggles[hostname] === true;
 
   if (globalCapture && !siteCaptureDisabled) {
-    sendToFirelink([downloadItem.url], downloadItem.referrer, { allowProtocolFallback: false }).then((accepted) => {
+    sendToFirelink([downloadItem.url], downloadItem.referrer, { allowProtocolFallback: false, silent: true }).then((accepted) => {
       if (accepted) {
         chrome.downloads.cancel(downloadItem.id, () => {
           chrome.downloads.erase({ id: downloadItem.id });
