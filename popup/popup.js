@@ -12,6 +12,13 @@ document.addEventListener('DOMContentLoaded', () => {
   const pairingContent = document.getElementById('pairing-content');
   const pairingToggleBtn = document.getElementById('pairing-toggle-btn');
   const pairingDesc = document.getElementById('pairing-desc');
+  const headerLogo = document.getElementById('header-logo');
+
+  if (headerLogo) {
+    headerLogo.addEventListener('error', () => {
+      headerLogo.style.display = 'none';
+    });
+  }
 
   // Check connection to Firelink
   async function checkConnection() {

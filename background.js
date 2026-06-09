@@ -17,10 +17,13 @@ const defaultSettings = {
 let cachedSettings = { ...defaultSettings };
 
 // Sync settings
-chrome.storage.local.get(['globalCapture', 'siteToggles', 'extensionToken'], (result) => {
-  if (result.globalCapture !== undefined) cachedSettings.globalCapture = result.globalCapture;
-  if (result.siteToggles !== undefined) cachedSettings.siteToggles = result.siteToggles;
-  if (result.extensionToken !== undefined) cachedSettings.extensionToken = result.extensionToken;
+let settingsLoadedPromise = new Promise((resolve) => {
+  chrome.storage.local.get(['globalCapture', 'siteToggles', 'extensionToken'], (result) => {
+    if (result.globalCapture !== undefined) cachedSettings.globalCapture = result.globalCapture;
+    if (result.siteToggles !== undefined) cachedSettings.siteToggles = result.siteToggles;
+    if (result.extensionToken !== undefined) cachedSettings.extensionToken = result.extensionToken;
+    resolve();
+  });
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {
@@ -165,7 +168,9 @@ async function sendToFirelink(urls, referer = "", options = {}) {
 }
 
 // Handle context menu clicks
-chrome.contextMenus.onClicked.addListener((info, tab) => {
+chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+  await settingsLoadedPromise;
+
   if (info.menuItemId === "download-with-firelink") {
     if (info.linkUrl) {
       sendToFirelink([info.linkUrl], tab.url);
@@ -211,7 +216,9 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 });
 
 // Listen for downloads
-chrome.downloads.onCreated.addListener((downloadItem) => {
+chrome.downloads.onCreated.addListener(async (downloadItem) => {
+  await settingsLoadedPromise;
+
   const globalCapture = cachedSettings.globalCapture || false;
   const siteToggles = cachedSettings.siteToggles || {};
 
@@ -226,12 +233,28 @@ chrome.downloads.onCreated.addListener((downloadItem) => {
   const siteCaptureDisabled = siteToggles[hostname] === true;
 
   if (globalCapture && !siteCaptureDisabled) {
-    sendToFirelink([downloadItem.url], downloadItem.referrer, { allowProtocolFallback: true, silent: true }).then((accepted) => {
-      if (accepted) {
-        chrome.downloads.cancel(downloadItem.id, () => {
-          chrome.downloads.erase({ id: downloadItem.id });
-        });
+    const normalizedURLs = normalizeURLList([downloadItem.url]);
+    if (normalizedURLs.length === 0) return;
+
+    // Pause the download immediately to prevent completion while we ping Firelink
+    chrome.downloads.pause(downloadItem.id, () => {
+      if (chrome.runtime.lastError) {
+        // Ignored, might be already completed or cancelled by something else
       }
+      
+      sendToFirelink([downloadItem.url], downloadItem.referrer, { allowProtocolFallback: true, silent: true }).then((accepted) => {
+        if (accepted) {
+          chrome.downloads.cancel(downloadItem.id, () => {
+            chrome.downloads.erase({ id: downloadItem.id });
+            if (chrome.runtime.lastError) { /* ignore */ }
+          });
+        } else {
+          // Firelink rejected or is offline, let the browser resume the download
+          chrome.downloads.resume(downloadItem.id, () => {
+            if (chrome.runtime.lastError) { /* ignore */ }
+          });
+        }
+      });
     });
   }
 });
