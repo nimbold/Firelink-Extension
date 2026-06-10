@@ -15,14 +15,15 @@ It intelligently intercepts browser downloads, captures media URLs, and forwards
 
 ---
 
-## 🌟 Current Status (v1.0.11)
+## 🌟 Current Status (v1.0.12)
 
-The extension has been updated to **v1.0.11** with robust performance and security enhancements:
+The extension has been updated to **v1.0.12** with robust performance and security enhancements:
+- **HMAC-SHA256 Authentication**: All requests to the native Firelink app are now cryptographically signed using the Web Crypto API to ensure maximum security against replay and CSRF attacks.
+- **Context-Aware Behavior**: Intelligently differentiates between automatic background captures and manual context-menu actions to respect your UI preferences in the native app.
 - **Firefox MV3 Optimized**: 100% compliant with strict Manifest V3 Content Security Policies and optimized Event Page architectures.
 - **Zero Race Conditions**: Secure async state handling guarantees your capture settings are strictly respected even upon background wakeup.
 - **Duplicate Prevention**: Intelligently pauses browser downloads while pinging Firelink to guarantee no duplicate files are saved.
-- **Secure Pairing**: Uses a dynamic pairing token instead of a static shared token to securely authenticate with Firelink.
-- **Connection Check**: The popup verifies the local app through `/ping` and clearly shows connected, offline, setup-required, and invalid-token states.
+- **Connection Check**: The popup verifies the local app through `/ping` with the new signature model, showing clear connection states.
 
 ---
 

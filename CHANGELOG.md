@@ -2,6 +2,16 @@
 
 All notable changes to Firelink Companion will be documented in this file.
 
+## [1.0.12] - 2026-06-11
+
+### Security Fixes
+- Upgraded the Firelink app connection protocol to use HMAC-SHA256 signatures, preventing unauthenticated access to the local extension server.
+- The extension now correctly signs the payload and a timestamp using the pairing token instead of passing it as a simple HTTP header.
+
+### Fixes
+- Added a `silent` flag to the payload when capturing background downloads to explicitly differentiate auto-captures from manual context-menu clicks, restoring the intended "Add Downloads" bypass behavior.
+- Updated the connection status check in the popup to correctly sign the `/ping` request, resolving an issue where it incorrectly displayed "App is closed".
+
 ## [1.0.11] - 2026-06-10
 
 ### Fixes
