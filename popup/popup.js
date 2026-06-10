@@ -12,12 +12,19 @@ document.addEventListener('DOMContentLoaded', () => {
   const pairingContent = document.getElementById('pairing-content');
   const pairingToggleBtn = document.getElementById('pairing-toggle-btn');
   const pairingDesc = document.getElementById('pairing-desc');
-  const headerLogo = document.getElementById('header-logo');
 
-  if (headerLogo) {
-    headerLogo.addEventListener('error', () => {
-      headerLogo.style.display = 'none';
-    });
+  async function generateHMAC(token, timestamp, bodyStr) {
+    const enc = new TextEncoder();
+    const keyMaterial = await crypto.subtle.importKey(
+      "raw",
+      enc.encode(token),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"]
+    );
+    const data = enc.encode(timestamp + bodyStr);
+    const signature = await crypto.subtle.sign("HMAC", keyMaterial, data);
+    return Array.from(new Uint8Array(signature)).map(b => b.toString(16).padStart(2, '0')).join('');
   }
 
   // Check connection to Firelink
@@ -35,10 +42,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
     for (const port of FIRELINK_PORTS) {
       try {
+        const timestamp = Date.now().toString();
+        const signature = await generateHMAC(token, timestamp, "");
         const response = await fetch(`http://127.0.0.1:${port}/ping`, {
           method: "GET",
           headers: {
-            "X-Firelink-Extension": token
+            "X-Firelink-Signature": signature,
+            "X-Firelink-Timestamp": timestamp
           }
         });
         if (response.ok) {
