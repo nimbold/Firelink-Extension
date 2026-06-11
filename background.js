@@ -136,7 +136,8 @@ async function sendToFirelink(urls, referer = "", options = {}) {
   const payload = {
     urls: normalizedURLs,
     referer: referer,
-    silent: silent
+    silent: silent,
+    filename: options.filename
   };
   const bodyStr = JSON.stringify(payload);
   const timestamp = Date.now().toString();
@@ -245,7 +246,12 @@ chrome.downloads.onCreated.addListener((downloadItem) => {
   const siteCaptureDisabled = siteToggles[hostname] === true;
 
   if (globalCapture && !siteCaptureDisabled) {
-    sendToFirelink([downloadItem.url], downloadItem.referrer, { allowProtocolFallback: true, silent: true }).then((accepted) => {
+    let filename = undefined;
+    if (downloadItem.filename) {
+      filename = downloadItem.filename.replace(/^.*[\\/]/, '');
+    }
+    
+    sendToFirelink([downloadItem.url], downloadItem.referrer, { allowProtocolFallback: true, silent: true, filename: filename }).then((accepted) => {
       if (accepted) {
         chrome.downloads.cancel(downloadItem.id, () => {
           chrome.downloads.erase({ id: downloadItem.id });
