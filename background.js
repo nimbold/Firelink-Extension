@@ -130,7 +130,7 @@ async function sendToFirelink(urls, referer = "", options = {}) {
         message: "Please click the Firelink extension icon and paste your pairing token to connect."
       });
     }
-    return triggerDeepLink();
+    return false;
   }
 
   const payload = {

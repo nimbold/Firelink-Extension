@@ -9,6 +9,7 @@ All notable changes to Firelink Companion will be documented in this file.
 - The extension now correctly signs the payload and a timestamp using the pairing token instead of passing it as a simple HTTP header.
 
 ### Fixes
+- Prevented the extension from falling back to deep linking if the pairing token hasn't been set, fully closing a token bypass vulnerability.
 - Added a `silent` flag to the payload when capturing background downloads to explicitly differentiate auto-captures from manual context-menu clicks, restoring the intended "Add Downloads" bypass behavior.
 - Updated the connection status check in the popup to correctly sign the `/ping` request, resolving an issue where it incorrectly displayed "App is closed".
 
