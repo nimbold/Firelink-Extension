@@ -2,6 +2,18 @@
 
 All notable changes to Firelink Companion will be documented in this file.
 
+## [1.0.13] - 2026-06-13
+
+### Integration
+- Connect to the rewritten Firelink desktop app through the fixed `127.0.0.1:23522` endpoint instead of scanning legacy ports.
+- Share one signed-request implementation between the background worker and popup.
+- Add request timeouts and explicit server detection for clearer offline and invalid-token states.
+
+### Reliability
+- Wait for persisted settings before handling context menu and browser download events.
+- Pause intercepted browser downloads during handoff, resume them if Firelink is unavailable or rejects the request, and cancel them only after Firelink confirms acceptance.
+- Disable deep-link fallback for automatic captures so browser downloads are never discarded without an API acknowledgement.
+
 ## [1.0.12] - 2026-06-11
 
 ### Security Fixes

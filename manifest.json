@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Firelink Companion",
-  "version": "1.0.12",
+  "version": "1.0.13",
   "description": "Capture downloads and links directly to Firelink download manager.",
   "permissions": [
     "downloads",
@@ -12,20 +12,10 @@
     "notifications"
   ],
   "host_permissions": [
-    "http://127.0.0.1:6412/*",
-    "http://127.0.0.1:6413/*",
-    "http://127.0.0.1:6414/*",
-    "http://127.0.0.1:6415/*",
-    "http://127.0.0.1:6416/*",
-    "http://127.0.0.1:6417/*",
-    "http://127.0.0.1:6418/*",
-    "http://127.0.0.1:6419/*",
-    "http://127.0.0.1:6420/*",
-    "http://127.0.0.1:6421/*",
-    "http://127.0.0.1:6422/*"
+    "http://127.0.0.1:23522/*"
   ],
   "background": {
-    "scripts": ["background.js"]
+    "scripts": ["protocol.js", "background.js"]
   },
   "action": {
     "default_icon": {

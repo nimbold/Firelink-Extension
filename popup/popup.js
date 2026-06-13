@@ -13,23 +13,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const pairingToggleBtn = document.getElementById('pairing-toggle-btn');
   const pairingDesc = document.getElementById('pairing-desc');
 
-  async function generateHMAC(token, timestamp, bodyStr) {
-    const enc = new TextEncoder();
-    const keyMaterial = await crypto.subtle.importKey(
-      "raw",
-      enc.encode(token),
-      { name: "HMAC", hash: "SHA-256" },
-      false,
-      ["sign"]
-    );
-    const data = enc.encode(timestamp + bodyStr);
-    const signature = await crypto.subtle.sign("HMAC", keyMaterial, data);
-    return Array.from(new Uint8Array(signature)).map(b => b.toString(16).padStart(2, '0')).join('');
-  }
-
   // Check connection to Firelink
   async function checkConnection() {
-    const FIRELINK_PORTS = Array.from({ length: 11 }, (_, index) => 6412 + index);
     const token = tokenInput.value.trim();
 
     if (!token) {
@@ -40,40 +25,29 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
-    for (const port of FIRELINK_PORTS) {
-      try {
-        const timestamp = Date.now().toString();
-        const signature = await generateHMAC(token, timestamp, "");
-        const response = await fetch(`http://127.0.0.1:${port}/ping`, {
-          method: "GET",
-          headers: {
-            "X-Firelink-Signature": signature,
-            "X-Firelink-Timestamp": timestamp
-          }
-        });
-        if (response.ok) {
-          statusIndicator.classList.remove('disconnected');
-          statusIndicator.classList.add('connected');
-          statusText.textContent = 'App connected';
+    try {
+      await FirelinkProtocol.signedFetch("/ping", token);
+      statusIndicator.classList.remove('disconnected');
+      statusIndicator.classList.add('connected');
+      statusText.textContent = 'App connected';
 
-          pairingContent.classList.add('is-collapsed');
-          pairingToggleBtn.textContent = '▼';
-          pairingDesc.textContent = 'Connected securely';
-          return;
-        } else if (response.status === 403) {
-          statusIndicator.classList.remove('connected');
-          statusIndicator.classList.add('disconnected');
-          statusText.textContent = 'Invalid token';
+      pairingContent.classList.add('is-collapsed');
+      pairingToggleBtn.textContent = '▼';
+      pairingDesc.textContent = 'Connected securely';
+      return;
+    } catch (error) {
+      if (error.serverReached && error.status === 403) {
+        statusIndicator.classList.remove('connected');
+        statusIndicator.classList.add('disconnected');
+        statusText.textContent = 'Invalid token';
 
-          pairingContent.classList.remove('is-collapsed');
-          pairingToggleBtn.textContent = '▲';
-          pairingDesc.textContent = 'Invalid token. Please update.';
-          return;
-        }
-      } catch (error) {
-        // Try next port
+        pairingContent.classList.remove('is-collapsed');
+        pairingToggleBtn.textContent = '▲';
+        pairingDesc.textContent = 'Invalid token. Please update.';
+        return;
       }
     }
+
     statusIndicator.classList.remove('connected');
     statusIndicator.classList.add('disconnected');
     statusText.textContent = 'App closed';

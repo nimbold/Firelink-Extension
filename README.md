@@ -15,10 +15,11 @@ It intelligently intercepts browser downloads, captures media URLs, and forwards
 
 ---
 
-## 🌟 Current Status (v1.0.12)
+## 🌟 Current Status (v1.0.13)
 
-The extension has been updated to **v1.0.12** with robust performance and security enhancements:
+The extension has been updated to **v1.0.13** with robust performance and security enhancements:
 - **HMAC-SHA256 Authentication**: All requests to the native Firelink app are now cryptographically signed using the Web Crypto API to ensure maximum security against replay and CSRF attacks.
+- **Fixed Local Endpoint**: The rewritten desktop app and extension communicate through `127.0.0.1:23522`.
 - **Context-Aware Behavior**: Intelligently differentiates between automatic background captures and manual context-menu actions to respect your UI preferences in the native app.
 - **Firefox MV3 Optimized**: 100% compliant with strict Manifest V3 Content Security Policies and optimized Event Page architectures.
 - **Zero Race Conditions**: Secure async state handling guarantees your capture settings are strictly respected even upon background wakeup.

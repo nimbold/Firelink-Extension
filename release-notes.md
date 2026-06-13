@@ -1,6 +1,7 @@
-### Improvements
-- Polish the pairing-token popup UI by moving inline styles into the extension stylesheet and masking the token input by default.
-- Document that Firelink app updates now use GitHub Releases while the browser extension remains a separate add-on release.
+### Integration
+- Use the rewritten Firelink desktop app's fixed `127.0.0.1:23522` endpoint.
+- Share signed-request and timeout handling between the popup and background worker.
 
-### Changes
-- Remove stale references to the old static `firelink-extension-v1` token from the background script.
+### Reliability
+- Wait for persisted extension settings before capturing downloads.
+- Resume paused browser downloads whenever Firelink does not confirm acceptance.

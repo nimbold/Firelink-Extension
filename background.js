@@ -1,9 +1,5 @@
 // background.js
 
-// IMPORTANT(Compatibility):
-// Store approvals can take days. If the local API changes, keep the native app compatible
-// with the currently published extension until the new extension has reached users.
-const FIRELINK_PORTS = Array.from({ length: 11 }, (_, index) => 6412 + index);
 const ALLOWED_SCHEMES = new Set(["http:", "https:", "ftp:", "sftp:"]);
 
 // Default settings
@@ -16,11 +12,13 @@ const defaultSettings = {
 // Cached settings for synchronous access
 let cachedSettings = { ...defaultSettings };
 
-// Sync settings
-chrome.storage.local.get(['globalCapture', 'siteToggles', 'extensionToken'], (result) => {
-  if (result.globalCapture !== undefined) cachedSettings.globalCapture = result.globalCapture;
-  if (result.siteToggles !== undefined) cachedSettings.siteToggles = result.siteToggles;
-  if (result.extensionToken !== undefined) cachedSettings.extensionToken = result.extensionToken;
+const settingsLoaded = new Promise(resolve => {
+  chrome.storage.local.get(['globalCapture', 'siteToggles', 'extensionToken'], (result) => {
+    if (result.globalCapture !== undefined) cachedSettings.globalCapture = result.globalCapture;
+    if (result.siteToggles !== undefined) cachedSettings.siteToggles = result.siteToggles;
+    if (result.extensionToken !== undefined) cachedSettings.extensionToken = result.extensionToken;
+    resolve();
+  });
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {
@@ -33,23 +31,28 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
 // Initialize settings
 chrome.runtime.onInstalled.addListener(() => {
-  chrome.storage.local.get(['globalCapture', 'siteToggles'], (result) => {
-    if (result.globalCapture === undefined) {
-      chrome.storage.local.set(defaultSettings);
+  chrome.storage.local.get(['globalCapture', 'siteToggles', 'extensionToken'], (result) => {
+    const missingSettings = {};
+    for (const [key, value] of Object.entries(defaultSettings)) {
+      if (result[key] === undefined) missingSettings[key] = value;
+    }
+    if (Object.keys(missingSettings).length > 0) {
+      chrome.storage.local.set(missingSettings);
     }
   });
 
-  // Create context menus
-  chrome.contextMenus.create({
-    id: "download-with-firelink",
-    title: "Download with Firelink",
-    contexts: ["link"]
-  });
+  chrome.contextMenus.removeAll(() => {
+    chrome.contextMenus.create({
+      id: "download-with-firelink",
+      title: "Download with Firelink",
+      contexts: ["link"]
+    });
 
-  chrome.contextMenus.create({
-    id: "download-selected-with-firelink",
-    title: "Download selected with Firelink",
-    contexts: ["selection"]
+    chrome.contextMenus.create({
+      id: "download-selected-with-firelink",
+      title: "Download selected with Firelink",
+      contexts: ["selection"]
+    });
   });
 });
 
@@ -58,7 +61,15 @@ function normalizeURL(rawURL) {
     return null;
   }
 
-  const trimmed = rawURL.trim().replace(/^[<("'[]+|[>)"'\].,;:!?]+$/g, "");
+  let trimmed = rawURL.trim();
+  const leadingWrappers = new Set(["<", "(", "\"", "'", "["]);
+  const trailingPunctuation = new Set([">", ")", "\"", "'", "]", ".", ",", ";", ":", "!", "?"]);
+  while (trimmed && leadingWrappers.has(trimmed[0])) {
+    trimmed = trimmed.slice(1);
+  }
+  while (trimmed && trailingPunctuation.has(trimmed[trimmed.length - 1])) {
+    trimmed = trimmed.slice(0, -1);
+  }
   try {
     const url = new URL(trimmed);
     return ALLOWED_SCHEMES.has(url.protocol) ? url.href : null;
@@ -81,22 +92,9 @@ function normalizeURLList(urls) {
   return [...new Set(rawURLs.map(normalizeURL).filter(Boolean))];
 }
 
-async function generateHMAC(token, timestamp, bodyStr) {
-  const enc = new TextEncoder();
-  const keyMaterial = await crypto.subtle.importKey(
-    "raw",
-    enc.encode(token),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"]
-  );
-  const data = enc.encode(timestamp + bodyStr);
-  const signature = await crypto.subtle.sign("HMAC", keyMaterial, data);
-  return Array.from(new Uint8Array(signature)).map(b => b.toString(16).padStart(2, '0')).join('');
-}
-
 // Function to send URLs to Firelink
 async function sendToFirelink(urls, referer = "", options = {}) {
+  await settingsLoaded;
   const silent = options.silent === true;
   const allowProtocolFallback = options.allowProtocolFallback !== false;
   const normalizedURLs = normalizeURLList(urls);
@@ -139,35 +137,14 @@ async function sendToFirelink(urls, referer = "", options = {}) {
     silent: silent,
     filename: options.filename
   };
-  const bodyStr = JSON.stringify(payload);
-  const timestamp = Date.now().toString();
-  const signature = await generateHMAC(cachedSettings.extensionToken, timestamp, bodyStr);
-
   try {
-    const fetchPromises = FIRELINK_PORTS.map(port =>
-      fetch(`http://127.0.0.1:${port}/download`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Firelink-Signature": signature,
-          "X-Firelink-Timestamp": timestamp
-        },
-        body: bodyStr
-      }).then(res => {
-        if (res.status === 403) {
-          throw new Error("FORBIDDEN");
-        }
-        if (!res.ok) throw new Error("Not OK");
-        return true;
-      })
-    );
-
-    // Fire all requests concurrently and resolve as soon as one succeeds
-    await Promise.any(fetchPromises);
+    await FirelinkProtocol.signedFetch("/download", cachedSettings.extensionToken, {
+      method: "POST",
+      payload
+    });
     return true;
   } catch (error) {
-    // If the app explicitly rejected the token, DO NOT fallback to deep link
-    if (error.errors && error.errors.some(e => e.message === "FORBIDDEN")) {
+    if (error.serverReached && error.status === 403) {
       if (!silent) {
         chrome.notifications.create({
           type: "basic",
@@ -179,8 +156,7 @@ async function sendToFirelink(urls, referer = "", options = {}) {
       return false;
     }
 
-    // All local ports failed (app might be closed), fallback to deep link
-    return triggerDeepLink();
+    return error.serverReached ? false : triggerDeepLink();
   }
 }
 
@@ -188,7 +164,7 @@ async function sendToFirelink(urls, referer = "", options = {}) {
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId === "download-with-firelink") {
     if (info.linkUrl) {
-      sendToFirelink([info.linkUrl], tab.url);
+      sendToFirelink([info.linkUrl], tab?.url || "");
     }
   } else if (info.menuItemId === "download-selected-with-firelink") {
     // We need to inject a script to get the selected HTML/links
@@ -230,9 +206,18 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   }
 });
 
+function runDownloadAction(action, ...args) {
+  return new Promise(resolve => {
+    chrome.downloads[action](...args, () => {
+      resolve(!chrome.runtime.lastError);
+    });
+  });
+}
+
 // Listen for downloads
-chrome.downloads.onCreated.addListener((downloadItem) => {
-  const globalCapture = cachedSettings.globalCapture || false;
+chrome.downloads.onCreated.addListener(async (downloadItem) => {
+  await settingsLoaded;
+  const globalCapture = cachedSettings.globalCapture === true;
   const siteToggles = cachedSettings.siteToggles || {};
 
   let hostname = "";
@@ -245,24 +230,35 @@ chrome.downloads.onCreated.addListener((downloadItem) => {
   // Check if capture is disabled for this specific site
   const siteCaptureDisabled = siteToggles[hostname] === true;
 
-  if (globalCapture && !siteCaptureDisabled) {
-    let filename = undefined;
-    if (downloadItem.filename) {
-      filename = downloadItem.filename.replace(/^.*[\\/]/, '');
+  if (!globalCapture || siteCaptureDisabled || !cachedSettings.extensionToken) return;
+
+  const filename = downloadItem.filename
+    ? downloadItem.filename.replace(/^.*[\\/]/, '')
+    : undefined;
+  const paused = await runDownloadAction("pause", downloadItem.id);
+  if (!paused) return;
+
+  const accepted = await sendToFirelink(
+    [downloadItem.url],
+    downloadItem.referrer,
+    {
+      allowProtocolFallback: false,
+      silent: true,
+      filename
     }
-    
-    sendToFirelink([downloadItem.url], downloadItem.referrer, { allowProtocolFallback: true, silent: true, filename: filename }).then((accepted) => {
-      if (accepted) {
-        chrome.downloads.cancel(downloadItem.id, () => {
-          chrome.downloads.erase({ id: downloadItem.id });
-        });
-        chrome.notifications.create({
-          type: "basic",
-          iconUrl: "icons/icon-128.png",
-          title: "Firelink Download Capture",
-          message: "Download automatically forwarded to Firelink."
-        });
-      }
-    });
+  );
+
+  if (!accepted) {
+    await runDownloadAction("resume", downloadItem.id);
+    return;
   }
+
+  await runDownloadAction("cancel", downloadItem.id);
+  await runDownloadAction("erase", { id: downloadItem.id });
+  chrome.notifications.create({
+    type: "basic",
+    iconUrl: "icons/icon-128.png",
+    title: "Firelink Download Capture",
+    message: "Download automatically forwarded to Firelink."
+  });
 });
