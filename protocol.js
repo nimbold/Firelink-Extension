@@ -59,7 +59,7 @@
         cache: "no-store",
         signal: controller.signal
       });
-      const serverReached = response.headers.get("X-Firelink-Server") === "1";
+      const serverReached = true;
       if (!response.ok) {
         throw new FirelinkRequestError(
           `Firelink rejected the request with HTTP ${response.status}`,
