@@ -243,7 +243,7 @@ chrome.downloads.onCreated.addListener(async (downloadItem) => {
     downloadItem.referrer,
     {
       allowProtocolFallback: false,
-      silent: true,
+      silent: false,
       filename
     }
   );
