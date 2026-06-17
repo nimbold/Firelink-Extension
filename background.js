@@ -131,11 +131,30 @@ async function sendToFirelink(urls, referer = "", options = {}) {
     return false;
   }
 
+  let cookieString = "";
+  try {
+    const mainUrl = normalizedURLs[0];
+    if (chrome.cookies) {
+      const cookies = await new Promise(resolve => {
+        chrome.cookies.getAll({ url: mainUrl }, resolve);
+      });
+      if (cookies && cookies.length > 0) {
+        cookieString = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+      }
+    }
+  } catch (e) {
+    // Ignore error fetching cookies
+  }
+
   const payload = {
     urls: normalizedURLs,
     referer: referer,
     silent: silent,
-    filename: options.filename
+    filename: options.filename,
+    headers: {
+      "User-Agent": navigator.userAgent,
+      ...(cookieString ? { "Cookie": cookieString } : {})
+    }
   };
   try {
     await FirelinkProtocol.signedFetch("/download", cachedSettings.extensionToken, {

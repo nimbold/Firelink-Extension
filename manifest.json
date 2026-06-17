@@ -9,10 +9,20 @@
     "storage",
     "activeTab",
     "scripting",
-    "notifications"
+    "notifications",
+    "cookies"
   ],
   "host_permissions": [
-    "http://127.0.0.1:23522/*"
+    "http://127.0.0.1:23522/*",
+    "http://127.0.0.1:23523/*",
+    "http://127.0.0.1:23524/*",
+    "http://127.0.0.1:23525/*",
+    "http://127.0.0.1:23526/*",
+    "http://127.0.0.1:23527/*",
+    "http://127.0.0.1:23528/*",
+    "http://127.0.0.1:23529/*",
+    "http://127.0.0.1:23530/*",
+    "http://127.0.0.1:23531/*"
   ],
   "background": {
     "scripts": ["protocol.js", "background.js"]

@@ -1,5 +1,6 @@
 (function initializeFirelinkProtocol(root) {
-  const ENDPOINT = "http://127.0.0.1:23522";
+  const START_PORT = 23522;
+  const END_PORT = 23531;
   const DEFAULT_TIMEOUT_MS = 2500;
 
   class FirelinkRequestError extends Error {
@@ -37,53 +38,62 @@
       : JSON.stringify(options.payload);
     const timestamp = Date.now().toString();
     const signature = await generateHMAC(token, timestamp, body);
-    const controller = new AbortController();
-    const timeout = setTimeout(
-      () => controller.abort(),
-      options.timeoutMs || DEFAULT_TIMEOUT_MS
-    );
 
-    try {
-      const headers = {
-        "X-Firelink-Signature": signature,
-        "X-Firelink-Timestamp": timestamp
-      };
-      if (body) {
-        headers["Content-Type"] = "application/json";
-      }
-
-      const response = await fetch(`${ENDPOINT}${path}`, {
-        method,
-        headers,
-        body: body || undefined,
-        cache: "no-store",
-        signal: controller.signal
-      });
-      const serverReached = true;
-      if (!response.ok) {
-        throw new FirelinkRequestError(
-          `Firelink rejected the request with HTTP ${response.status}`,
-          response.status,
-          serverReached
-        );
-      }
-      return response;
-    } catch (error) {
-      if (error instanceof FirelinkRequestError) {
-        throw error;
-      }
-      throw new FirelinkRequestError(
-        error && error.name === "AbortError"
-          ? "Firelink request timed out"
-          : "Firelink is unavailable"
-      );
-    } finally {
-      clearTimeout(timeout);
+    const headers = {
+      "X-Firelink-Signature": signature,
+      "X-Firelink-Timestamp": timestamp
+    };
+    if (body) {
+      headers["Content-Type"] = "application/json";
     }
+
+    let lastError = null;
+
+    for (let port = START_PORT; port <= END_PORT; port++) {
+      const endpoint = `http://127.0.0.1:${port}`;
+      const controller = new AbortController();
+      const timeout = setTimeout(
+        () => controller.abort(),
+        options.timeoutMs || DEFAULT_TIMEOUT_MS
+      );
+
+      try {
+        const response = await fetch(`${endpoint}${path}`, {
+          method,
+          headers,
+          body: body || undefined,
+          cache: "no-store",
+          signal: controller.signal
+        });
+        const serverReached = true;
+        if (!response.ok) {
+          throw new FirelinkRequestError(
+            `Firelink rejected the request with HTTP ${response.status}`,
+            response.status,
+            serverReached
+          );
+        }
+        return response;
+      } catch (error) {
+        if (error instanceof FirelinkRequestError) {
+          throw error;
+        }
+        lastError = error;
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+
+    throw new FirelinkRequestError(
+      lastError && lastError.name === "AbortError"
+        ? "Firelink request timed out"
+        : "Firelink is unavailable"
+    );
   }
 
   const api = {
-    ENDPOINT,
+    START_PORT,
+    END_PORT,
     FirelinkRequestError,
     generateHMAC,
     signedFetch
