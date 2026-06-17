@@ -105,7 +105,7 @@ async function sendToFirelink(urls, referer = "", options = {}) {
   const triggerDeepLink = () => {
     if (allowProtocolFallback) {
       const appUrl = `firelink://add?url=${encodeURIComponent(normalizedURLs.join('\n'))}`;
-      if (typeof document !== 'undefined') {
+      if (typeof document !== 'undefined' && document.body) {
         const iframe = document.createElement('iframe');
         iframe.style.display = 'none';
         iframe.src = appUrl;
