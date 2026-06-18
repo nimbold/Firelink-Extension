@@ -1,18 +1,23 @@
 const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
 const test = require("node:test");
+
 const {
+  START_PORT,
+  END_PORT,
   ENDPOINT,
   FirelinkRequestError,
   generateHMAC,
   signedFetch
 } = require("../protocol.js");
 
-test("uses the fixed Firelink desktop endpoint", () => {
-  assert.equal(ENDPOINT, "http://127.0.0.1:23522");
+test("uses Firelink desktop extension server port range", () => {
+  assert.equal(START_PORT, 6412);
+  assert.equal(END_PORT, 6422);
+  assert.equal(ENDPOINT, "http://127.0.0.1:6412");
 });
 
-test("generates the expected HMAC-SHA256 signature", async () => {
+test("generates expected HMAC-SHA256 signature", async () => {
   const token = "pairing-token";
   const timestamp = "1710000000000";
   const body = '{"urls":["https://example.com/file.zip"]}';
@@ -24,9 +29,10 @@ test("generates the expected HMAC-SHA256 signature", async () => {
   assert.equal(await generateHMAC(token, timestamp, body), expected);
 });
 
-test("signedFetch signs the exact serialized request body", async () => {
+test("signedFetch signs exact serialized request body", async () => {
   const originalFetch = global.fetch;
   const originalNow = Date.now;
+
   Date.now = () => 1710000000000;
   global.fetch = async (url, options) => {
     assert.equal(url, `${ENDPOINT}/download`);
@@ -49,10 +55,7 @@ test("signedFetch signs the exact serialized request body", async () => {
   try {
     await signedFetch("/download", "secret", {
       method: "POST",
-      payload: {
-        urls: ["https://example.com/file.zip"],
-        silent: true
-      }
+      payload: { urls: ["https://example.com/file.zip"], silent: true }
     });
   } finally {
     global.fetch = originalFetch;
@@ -60,8 +63,32 @@ test("signedFetch signs the exact serialized request body", async () => {
   }
 });
 
+test("signedFetch scans past occupied non-Firelink ports", async () => {
+  const originalFetch = global.fetch;
+  const seen = [];
+
+  global.fetch = async url => {
+    seen.push(url);
+    if (seen.length === 1) {
+      return new Response(null, { status: 404 });
+    }
+    return new Response(null, { status: 200 });
+  };
+
+  try {
+    await signedFetch("/ping", "secret");
+    assert.deepEqual(seen, [
+      "http://127.0.0.1:6412/ping",
+      "http://127.0.0.1:6413/ping"
+    ]);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test("reports authenticated server rejections distinctly from offline errors", async () => {
   const originalFetch = global.fetch;
+
   global.fetch = async () => new Response(null, {
     status: 403,
     headers: { "X-Firelink-Server": "1" }

@@ -1,6 +1,7 @@
 (function initializeFirelinkProtocol(root) {
-  const START_PORT = 23522;
-  const END_PORT = 23531;
+  const START_PORT = 6412;
+  const END_PORT = 6422;
+  const ENDPOINT = `http://127.0.0.1:${START_PORT}`;
   const DEFAULT_TIMEOUT_MS = 2500;
 
   class FirelinkRequestError extends Error {
@@ -38,6 +39,7 @@
       : JSON.stringify(options.payload);
     const timestamp = Date.now().toString();
     const signature = await generateHMAC(token, timestamp, body);
+    const timeoutMs = options.timeoutMs || DEFAULT_TIMEOUT_MS;
 
     const headers = {
       "X-Firelink-Signature": signature,
@@ -49,13 +51,10 @@
 
     let lastError = null;
 
-    for (let port = START_PORT; port <= END_PORT; port++) {
+    for (let port = START_PORT; port <= END_PORT; port += 1) {
       const endpoint = `http://127.0.0.1:${port}`;
       const controller = new AbortController();
-      const timeout = setTimeout(
-        () => controller.abort(),
-        options.timeoutMs || DEFAULT_TIMEOUT_MS
-      );
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
       try {
         const response = await fetch(`${endpoint}${path}`, {
@@ -65,14 +64,20 @@
           cache: "no-store",
           signal: controller.signal
         });
-        const serverReached = true;
+
         if (!response.ok) {
-          throw new FirelinkRequestError(
-            `Firelink rejected the request with HTTP ${response.status}`,
+          const requestError = new FirelinkRequestError(
+            `Firelink rejected request with HTTP ${response.status}`,
             response.status,
-            serverReached
+            true
           );
+          if (response.status === 403) {
+            throw requestError;
+          }
+          lastError = requestError;
+          continue;
         }
+
         return response;
       } catch (error) {
         if (error instanceof FirelinkRequestError) {
@@ -82,6 +87,10 @@
       } finally {
         clearTimeout(timeout);
       }
+    }
+
+    if (lastError instanceof FirelinkRequestError) {
+      throw lastError;
     }
 
     throw new FirelinkRequestError(
@@ -94,10 +103,12 @@
   const api = {
     START_PORT,
     END_PORT,
+    ENDPOINT,
     FirelinkRequestError,
     generateHMAC,
     signedFetch
   };
+
   root.FirelinkProtocol = api;
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;
