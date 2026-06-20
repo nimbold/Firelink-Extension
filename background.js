@@ -7,6 +7,7 @@ const defaultSettings = {
 };
 
 let cachedSettings = { ...defaultSettings };
+const pendingProtocolFallbacks = new Map();
 
 const settingsLoaded = new Promise(resolve => {
   chrome.storage.local.get(
@@ -124,14 +125,21 @@ function captureEnabledForURL(rawURL) {
   }
 }
 
-function triggerDeepLink(normalizedURLs, allowProtocolFallback) {
-  if (!allowProtocolFallback) {
-    return false;
-  }
-
+function triggerDeepLink(normalizedURLs) {
   const appUrl = `firelink://add?url=${encodeURIComponent(normalizedURLs.join("\n"))}`;
   chrome.tabs.create({ url: appUrl, active: false });
-  return true;
+}
+
+function offerProtocolFallback(normalizedURLs) {
+  const notificationId = `firelink-fallback-${Date.now()}-${Math.random()}`;
+  pendingProtocolFallbacks.set(notificationId, normalizedURLs);
+  chrome.notifications.create(notificationId, {
+    type: "basic",
+    iconUrl: "icons/icon-128.png",
+    title: "Firelink App Unavailable",
+    message: "The secure local connection failed. Open Firelink and retry, or use the protocol fallback.",
+    buttons: [{ title: "Use protocol fallback" }]
+  });
 }
 
 async function collectCookieHeader(url) {
@@ -204,11 +212,42 @@ async function sendToFirelink(urls, referer = "", options = {}) {
       return false;
     }
 
-    return error.serverReached
-      ? false
-      : triggerDeepLink(normalizedURLs, allowProtocolFallback);
+    if (!silent) {
+      if (!error.serverReached && allowProtocolFallback) {
+        offerProtocolFallback(normalizedURLs);
+      } else {
+        chrome.notifications.create({
+          type: "basic",
+          iconUrl: "icons/icon-128.png",
+          title: "Firelink Handoff Failed",
+          message: error.serverReached
+            ? "Firelink rejected the download. The browser will handle it normally."
+            : "Firelink is unavailable. The browser will handle the download normally."
+        });
+      }
+    }
+    return false;
   }
 }
+
+chrome.notifications.onButtonClicked.addListener((notificationId, buttonIndex) => {
+  if (buttonIndex !== 0) {
+    return;
+  }
+
+  const urls = pendingProtocolFallbacks.get(notificationId);
+  if (!urls) {
+    return;
+  }
+
+  pendingProtocolFallbacks.delete(notificationId);
+  chrome.notifications.clear(notificationId);
+  triggerDeepLink(urls);
+});
+
+chrome.notifications.onClosed.addListener(notificationId => {
+  pendingProtocolFallbacks.delete(notificationId);
+});
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId === "download-with-firelink") {

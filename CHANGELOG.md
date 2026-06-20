@@ -2,6 +2,14 @@
 
 All notable changes to Firelink Companion will be documented in this file.
 
+## Unreleased
+
+### Fixes
+- Keep the signed local API as the primary handoff path and require an explicit notification action before invoking the `firelink://` fallback.
+- Refresh the packaged extension so its host permissions and API port range match the desktop app's `127.0.0.1:6412-6422` listener.
+- Never open a protocol tab after a successful direct handoff.
+- Resume browser downloads whenever Firelink does not confirm acceptance.
+
 ## [1.0.13] - 2026-06-13
 
 ### Integration
