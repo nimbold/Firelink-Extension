@@ -10,11 +10,12 @@
   let preferredPort = null;
 
   class FirelinkRequestError extends Error {
-    constructor(message, status = null, serverReached = false) {
+    constructor(message, status = null, serverReached = false, requestMayHaveBeenSent = false) {
       super(message);
       this.name = "FirelinkRequestError";
       this.status = status;
       this.serverReached = serverReached;
+      this.requestMayHaveBeenSent = requestMayHaveBeenSent;
     }
   }
 
@@ -143,7 +144,10 @@
       throw new FirelinkRequestError(
         error && error.name === "AbortError"
           ? "Firelink request timed out"
-          : "Firelink is unavailable"
+          : "Firelink is unavailable",
+        null,
+        false,
+        true
       );
     }
 

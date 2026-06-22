@@ -3,14 +3,22 @@ const ALLOWED_SCHEMES = new Set(["http:", "https:", "ftp:", "sftp:"]);
 const defaultSettings = {
   globalCapture: true,
   siteToggles: {},
-  extensionToken: ""
+  extensionToken: "",
+  launchTimeoutCount: 0,
+  launchCooldownUntil: 0
 };
 
 let cachedSettings = { ...defaultSettings };
+const LAUNCH_URL = "firelink://launch";
+const LAUNCH_TIMEOUT_MS = 15000;
+const LAUNCH_RETRY_MS = 500;
+const LAUNCH_TIMEOUTS_BEFORE_COOLDOWN = 2;
+const LAUNCH_COOLDOWN_MS = 60000;
+let launchSession = null;
 
 const settingsLoaded = new Promise(resolve => {
   chrome.storage.local.get(
-    ["globalCapture", "siteToggles", "extensionToken"],
+    ["globalCapture", "siteToggles", "extensionToken", "launchTimeoutCount", "launchCooldownUntil"],
     result => {
       if (result.globalCapture !== undefined) {
         cachedSettings.globalCapture = result.globalCapture;
@@ -20,6 +28,12 @@ const settingsLoaded = new Promise(resolve => {
       }
       if (result.extensionToken !== undefined) {
         cachedSettings.extensionToken = result.extensionToken;
+      }
+      if (result.launchTimeoutCount !== undefined) {
+        cachedSettings.launchTimeoutCount = result.launchTimeoutCount;
+      }
+      if (result.launchCooldownUntil !== undefined) {
+        cachedSettings.launchCooldownUntil = result.launchCooldownUntil;
       }
       resolve();
     }
@@ -39,11 +53,17 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (changes.extensionToken) {
     cachedSettings.extensionToken = changes.extensionToken.newValue;
   }
+  if (changes.launchTimeoutCount) {
+    cachedSettings.launchTimeoutCount = changes.launchTimeoutCount.newValue;
+  }
+  if (changes.launchCooldownUntil) {
+    cachedSettings.launchCooldownUntil = changes.launchCooldownUntil.newValue;
+  }
 });
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.storage.local.get(
-    ["globalCapture", "siteToggles", "extensionToken"],
+    ["globalCapture", "siteToggles", "extensionToken", "launchTimeoutCount", "launchCooldownUntil"],
     result => {
       const missingSettings = {};
       for (const [key, value] of Object.entries(defaultSettings)) {
@@ -124,23 +144,162 @@ function captureEnabledForURL(rawURL) {
   }
 }
 
-function triggerDeepLink(normalizedURLs) {
-  const appUrl = `firelink://add?url=${encodeURIComponent(normalizedURLs.join("\n"))}`;
+function notify(title, message) {
+  chrome.notifications.create({
+    type: "basic",
+    iconUrl: "icons/icon-128.png",
+    title,
+    message
+  });
+}
+
+function createLaunchTab() {
   return new Promise(resolve => {
-    chrome.tabs.create({ url: appUrl, active: false }, () => {
+    chrome.tabs.create({ url: LAUNCH_URL, active: false }, tab => {
       if (chrome.runtime.lastError) {
-        chrome.notifications.create({
-          type: "basic",
-          iconUrl: "icons/icon-128.png",
-          title: "Could Not Open Firelink",
-          message: "The Firelink app protocol is not registered. Open or reinstall Firelink, then retry."
-        });
-        resolve(false);
+        resolve(null);
         return;
       }
-      resolve(true);
+      resolve(tab?.id ?? null);
     });
   });
+}
+
+function closeLaunchTab(tabId) {
+  if (tabId === null || tabId === undefined || !chrome.tabs.remove) {
+    return Promise.resolve();
+  }
+  return new Promise(resolve => {
+    chrome.tabs.remove(tabId, () => resolve());
+  });
+}
+
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function storeLaunchState(timeoutCount, cooldownUntil) {
+  cachedSettings.launchTimeoutCount = timeoutCount;
+  cachedSettings.launchCooldownUntil = cooldownUntil;
+  chrome.storage.local.set({
+    launchTimeoutCount: timeoutCount,
+    launchCooldownUntil: cooldownUntil
+  });
+}
+
+async function waitForFirelink(token, deadline) {
+  let lastError = null;
+  while (Date.now() < deadline) {
+    try {
+      await FirelinkProtocol.signedFetch("/ping", token);
+      return true;
+    } catch (error) {
+      lastError = error;
+      if (error.serverReached && error.status === 403) {
+        throw error;
+      }
+      await delay(LAUNCH_RETRY_MS);
+    }
+  }
+  throw lastError || new Error("Firelink launch timed out");
+}
+
+async function deliverAfterStartup(entry, deadline) {
+  while (Date.now() < deadline) {
+    try {
+      await FirelinkProtocol.signedFetch("/download", entry.token, {
+        method: "POST",
+        payload: entry.payload
+      });
+      return true;
+    } catch (error) {
+      if (error.status === 503 && error.serverReached) {
+        await delay(LAUNCH_RETRY_MS);
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw new Error("Firelink launch timed out");
+}
+
+function enqueueLaunchDelivery(token, payload) {
+  return new Promise(resolve => {
+    if (!launchSession) {
+      launchSession = {
+        entries: [],
+        running: false
+      };
+    }
+    launchSession.entries.push({
+      token,
+      payload: Object.freeze({ ...payload, urls: Object.freeze([...payload.urls]) }),
+      resolve
+    });
+    if (!launchSession.running) {
+      launchSession.running = true;
+      void runLaunchSession(launchSession);
+    }
+  });
+}
+
+async function runLaunchSession(session) {
+  const deadline = Date.now() + LAUNCH_TIMEOUT_MS;
+  let tabId = null;
+  let launchFailed = false;
+  let deliveryFailed = false;
+
+  try {
+    tabId = await createLaunchTab();
+    if (tabId === null) {
+      throw new Error("Firelink protocol is not registered");
+    }
+    await waitForFirelink(session.entries[0].token, deadline);
+
+    let index = 0;
+    while (index < session.entries.length) {
+      const entry = session.entries[index];
+      try {
+        entry.result = await deliverAfterStartup(entry, deadline);
+      } catch (error) {
+        entry.result = false;
+        deliveryFailed = true;
+      }
+      index += 1;
+      if (index === session.entries.length) {
+        await delay(0);
+      }
+    }
+  } catch (error) {
+    launchFailed = true;
+    session.entries.forEach(entry => {
+      entry.result = false;
+    });
+  } finally {
+    if (launchSession === session) {
+      launchSession = null;
+    }
+    await closeLaunchTab(tabId);
+    if (launchFailed) {
+      const timeoutCount = (cachedSettings.launchTimeoutCount || 0) + 1;
+      const cooldownUntil = timeoutCount >= LAUNCH_TIMEOUTS_BEFORE_COOLDOWN
+        ? Date.now() + LAUNCH_COOLDOWN_MS
+        : 0;
+      storeLaunchState(timeoutCount, cooldownUntil);
+      notify(
+        "Firelink Was Not Opened",
+        cooldownUntil
+          ? "Firefox could not open Firelink. Check protocol permission, open Firelink once, then retry."
+          : "Approve Firefox’s prompt to open Firelink. No download was added."
+      );
+    } else {
+      storeLaunchState(0, 0);
+      if (deliveryFailed) {
+        notify("Firelink Handoff Failed", "Firelink opened but rejected a download request. No duplicate request was sent.");
+      }
+    }
+    session.entries.forEach(entry => entry.resolve(entry.result === true));
+  }
 }
 
 async function collectCookieHeader(url, cookieStoreId) {
@@ -172,12 +331,7 @@ async function sendToFirelink(urls, referer = "", options = {}) {
 
   if (!cachedSettings.extensionToken) {
     if (notifyOnFailure) {
-      chrome.notifications.create({
-        type: "basic",
-        iconUrl: "icons/icon-128.png",
-        title: "Firelink Setup Required",
-        message: "Please click the Firelink extension icon and paste the pairing token."
-      });
+        notify("Firelink Setup Required", "Please click the Firelink extension icon and paste the pairing token.");
     }
     return false;
   }
@@ -204,31 +358,49 @@ async function sendToFirelink(urls, referer = "", options = {}) {
   } catch (error) {
     if (error.serverReached && error.status === 403) {
       if (notifyOnFailure) {
-        chrome.notifications.create({
-          type: "basic",
-          iconUrl: "icons/icon-128.png",
-          title: "Firelink Connection Rejected",
-          message: "Your pairing token is invalid. Update it in the Firelink extension popup."
-        });
+        notify("Firelink Connection Rejected", "Your pairing token is invalid. Update it in the Firelink extension popup.");
       }
       return false;
     }
 
+    if (captureMode === "manual" && error.serverReached && error.status === 503) {
+      try {
+        return await deliverAfterStartup(
+          { token: cachedSettings.extensionToken, payload },
+          Date.now() + LAUNCH_TIMEOUT_MS
+        );
+      } catch (retryError) {
+        if (notifyOnFailure) {
+          notify("Firelink Handoff Failed", "Firelink started but was not ready to accept the download.");
+        }
+        return false;
+      }
+    }
+
     const canUseProtocol = allowProtocolFallback
-      && (!error.serverReached || error.status >= 500);
+      && captureMode === "manual"
+      && !error.serverReached
+      && !error.requestMayHaveBeenSent;
     if (canUseProtocol) {
-      return triggerDeepLink(normalizedURLs);
+      if ((cachedSettings.launchCooldownUntil || 0) > Date.now()) {
+        if (notifyOnFailure) {
+          notify(
+            "Firelink Launch Needs Attention",
+            "Open Firelink manually and confirm Firefox is allowed to open firelink links, then retry."
+          );
+        }
+        return false;
+      }
+      return enqueueLaunchDelivery(cachedSettings.extensionToken, payload);
     }
 
     if (notifyOnFailure) {
-      chrome.notifications.create({
-        type: "basic",
-        iconUrl: "icons/icon-128.png",
-        title: "Firelink Handoff Failed",
-        message: error.serverReached
+      notify(
+        "Firelink Handoff Failed",
+        error.serverReached
           ? "Firelink rejected the request. No download was added."
           : "Firelink is unavailable. No download was added."
-      });
+      );
     }
     return false;
   }

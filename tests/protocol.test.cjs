@@ -158,3 +158,30 @@ test("reports an unavailable app without sending a download payload", async () =
     global.fetch = originalFetch;
   }
 });
+
+test("marks post-discovery transport failure as possibly delivered", async () => {
+  const originalFetch = global.fetch;
+  const { signedFetch } = loadProtocol();
+
+  global.fetch = async url => {
+    if (url.endsWith("/ping")) {
+      return firelinkResponse();
+    }
+    throw new TypeError("Connection reset");
+  };
+
+  try {
+    await assert.rejects(
+      () => signedFetch("/download", "secret", {
+        method: "POST",
+        payload: { urls: ["https://example.com/file.zip"] }
+      }),
+      error => {
+        assert.equal(error.requestMayHaveBeenSent, true);
+        return true;
+      }
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});

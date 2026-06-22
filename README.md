@@ -44,6 +44,12 @@ If you wish to test unreleased features or modify the extension yourself:
 4. Select the `manifest.json` file from the directory.
 5. Open Firelink Settings → Integration, copy the pairing token, then paste it into the extension popup.
 
+### First offline launch
+
+When Firelink is closed and you explicitly choose **Download with Firelink**, Firefox displays an external-protocol security confirmation before opening `firelink://launch`. Approve it and enable **Always allow this extension to open firelink links** if offered. Firefox owns this permission prompt; Firelink cannot suppress or bypass it.
+
+If launch repeatedly times out, open Firelink once manually, verify it is installed as the `firelink://` handler, and confirm Firefox retained protocol permission before retrying.
+
 *Note: Temporary installations reset when you restart your browser. Support for Chrome/Safari is planned for the future.*
 
 ---
