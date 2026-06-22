@@ -2,10 +2,15 @@
 
 All notable changes to Firelink Companion will be documented in this file.
 
-## Unreleased
+## [1.0.14] - 2026-06-22
 
 ### Fixes
-- Keep the signed local API as the primary handoff path and require an explicit notification action before invoking the `firelink://` fallback.
+- Remove the unsupported Firefox notification-button API that prevented background capture listeners from registering.
+- Verify the Firelink server identity before treating localhost responses as authoritative or sending download URLs.
+- Use the registered `firelink://` protocol directly when an explicit “Download with Firelink” action finds the app offline.
+- Stop intercepting normal page clicks so offline fallback preserves the browser and website’s original download behavior.
+- Never attach one site’s cookies to a multi-URL handoff.
+- Restore the automatic-capture `silent` payload contract and resume browser downloads without offline notification spam.
 - Refresh the packaged extension so its host permissions and API port range match the desktop app's `127.0.0.1:6412-6422` listener.
 - Never open a protocol tab after a successful direct handoff.
 - Resume browser downloads whenever Firelink does not confirm acceptance.

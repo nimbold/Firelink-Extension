@@ -7,7 +7,6 @@ const defaultSettings = {
 };
 
 let cachedSettings = { ...defaultSettings };
-const pendingProtocolFallbacks = new Map();
 
 const settingsLoaded = new Promise(resolve => {
   chrome.storage.local.get(
@@ -127,29 +126,32 @@ function captureEnabledForURL(rawURL) {
 
 function triggerDeepLink(normalizedURLs) {
   const appUrl = `firelink://add?url=${encodeURIComponent(normalizedURLs.join("\n"))}`;
-  chrome.tabs.create({ url: appUrl, active: false });
-}
-
-function offerProtocolFallback(normalizedURLs) {
-  const notificationId = `firelink-fallback-${Date.now()}-${Math.random()}`;
-  pendingProtocolFallbacks.set(notificationId, normalizedURLs);
-  chrome.notifications.create(notificationId, {
-    type: "basic",
-    iconUrl: "icons/icon-128.png",
-    title: "Firelink App Unavailable",
-    message: "The secure local connection failed. Open Firelink and retry, or use the protocol fallback.",
-    buttons: [{ title: "Use protocol fallback" }]
+  return new Promise(resolve => {
+    chrome.tabs.create({ url: appUrl, active: false }, () => {
+      if (chrome.runtime.lastError) {
+        chrome.notifications.create({
+          type: "basic",
+          iconUrl: "icons/icon-128.png",
+          title: "Could Not Open Firelink",
+          message: "The Firelink app protocol is not registered. Open or reinstall Firelink, then retry."
+        });
+        resolve(false);
+        return;
+      }
+      resolve(true);
+    });
   });
 }
 
-async function collectCookieHeader(url) {
+async function collectCookieHeader(url, cookieStoreId) {
   if (!chrome.cookies) {
     return "";
   }
 
   try {
     const cookies = await new Promise(resolve => {
-      chrome.cookies.getAll({ url }, resolve);
+      const details = cookieStoreId ? { url, storeId: cookieStoreId } : { url };
+      chrome.cookies.getAll(details, resolve);
     });
     return cookies.map(cookie => `${cookie.name}=${cookie.value}`).join("; ");
   } catch (error) {
@@ -160,7 +162,8 @@ async function collectCookieHeader(url) {
 async function sendToFirelink(urls, referer = "", options = {}) {
   await settingsLoaded;
 
-  const silent = options.silent === true;
+  const captureMode = options.captureMode === "automatic" ? "automatic" : "manual";
+  const notifyOnFailure = options.notifyOnFailure !== false;
   const allowProtocolFallback = options.allowProtocolFallback !== false;
   const normalizedURLs = normalizeURLList(urls);
   if (normalizedURLs.length === 0) {
@@ -168,7 +171,7 @@ async function sendToFirelink(urls, referer = "", options = {}) {
   }
 
   if (!cachedSettings.extensionToken) {
-    if (!silent) {
+    if (notifyOnFailure) {
       chrome.notifications.create({
         type: "basic",
         iconUrl: "icons/icon-128.png",
@@ -179,18 +182,17 @@ async function sendToFirelink(urls, referer = "", options = {}) {
     return false;
   }
 
-  const cookieString = await collectCookieHeader(normalizedURLs[0]);
-  const headerLines = [`User-Agent: ${navigator.userAgent}`];
-  if (cookieString) {
-    headerLines.push(`Cookie: ${cookieString}`);
-  }
+  const cookieString = normalizedURLs.length === 1
+    ? await collectCookieHeader(normalizedURLs[0], options.cookieStoreId)
+    : "";
 
   const payload = {
     urls: normalizedURLs,
     referer,
-    silent,
+    silent: captureMode === "automatic",
     filename: options.filename,
-    headers: headerLines.join("\n")
+    headers: `User-Agent: ${navigator.userAgent}`,
+    cookies: cookieString || undefined
   };
 
   try {
@@ -201,7 +203,7 @@ async function sendToFirelink(urls, referer = "", options = {}) {
     return true;
   } catch (error) {
     if (error.serverReached && error.status === 403) {
-      if (!silent) {
+      if (notifyOnFailure) {
         chrome.notifications.create({
           type: "basic",
           iconUrl: "icons/icon-128.png",
@@ -212,47 +214,32 @@ async function sendToFirelink(urls, referer = "", options = {}) {
       return false;
     }
 
-    if (!silent) {
-      if (!error.serverReached && allowProtocolFallback) {
-        offerProtocolFallback(normalizedURLs);
-      } else {
-        chrome.notifications.create({
-          type: "basic",
-          iconUrl: "icons/icon-128.png",
-          title: "Firelink Handoff Failed",
-          message: error.serverReached
-            ? "Firelink rejected the download. The browser will handle it normally."
-            : "Firelink is unavailable. The browser will handle the download normally."
-        });
-      }
+    const canUseProtocol = allowProtocolFallback
+      && (!error.serverReached || error.status >= 500);
+    if (canUseProtocol) {
+      return triggerDeepLink(normalizedURLs);
+    }
+
+    if (notifyOnFailure) {
+      chrome.notifications.create({
+        type: "basic",
+        iconUrl: "icons/icon-128.png",
+        title: "Firelink Handoff Failed",
+        message: error.serverReached
+          ? "Firelink rejected the request. No download was added."
+          : "Firelink is unavailable. No download was added."
+      });
     }
     return false;
   }
 }
 
-chrome.notifications.onButtonClicked.addListener((notificationId, buttonIndex) => {
-  if (buttonIndex !== 0) {
-    return;
-  }
-
-  const urls = pendingProtocolFallbacks.get(notificationId);
-  if (!urls) {
-    return;
-  }
-
-  pendingProtocolFallbacks.delete(notificationId);
-  chrome.notifications.clear(notificationId);
-  triggerDeepLink(urls);
-});
-
-chrome.notifications.onClosed.addListener(notificationId => {
-  pendingProtocolFallbacks.delete(notificationId);
-});
-
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId === "download-with-firelink") {
     if (info.linkUrl) {
-      sendToFirelink([info.linkUrl], tab?.url || "");
+      sendToFirelink([info.linkUrl], tab?.url || "", {
+        cookieStoreId: tab?.cookieStoreId
+      });
     }
     return;
   }
@@ -270,7 +257,9 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
       if (chrome.runtime.lastError) {
         const urls = extractURLsFromText(info.selectionText);
         if (urls.length > 0) {
-          sendToFirelink(urls, tab.url);
+          sendToFirelink(urls, tab.url, {
+            cookieStoreId: tab.cookieStoreId
+          });
         }
         return;
       }
@@ -282,49 +271,30 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
           if (chrome.runtime.lastError) {
             const urls = extractURLsFromText(info.selectionText);
             if (urls.length > 0) {
-              sendToFirelink(urls, tab.url);
+              sendToFirelink(urls, tab.url, {
+                cookieStoreId: tab.cookieStoreId
+              });
             }
             return;
           }
 
           if (response?.links?.length > 0) {
-            sendToFirelink(response.links, tab.url);
+            sendToFirelink(response.links, tab.url, {
+              cookieStoreId: tab.cookieStoreId
+            });
             return;
           }
 
           const urls = extractURLsFromText(info.selectionText);
           if (urls.length > 0) {
-            sendToFirelink(urls, tab.url);
+            sendToFirelink(urls, tab.url, {
+              cookieStoreId: tab.cookieStoreId
+            });
           }
         }
       );
     }
   );
-});
-
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.action !== "downloadWithFirelink") {
-    return false;
-  }
-
-  (async () => {
-    await settingsLoaded;
-
-    const url = normalizeURL(request.url);
-    if (!url || !cachedSettings.extensionToken || !captureEnabledForURL(url)) {
-      sendResponse({ accepted: false });
-      return;
-    }
-
-    const accepted = await sendToFirelink([url], request.referer || sender.tab?.url || "", {
-      allowProtocolFallback: false,
-      silent: true,
-      filename: request.filename
-    });
-    sendResponse({ accepted });
-  })();
-
-  return true;
 });
 
 function runDownloadAction(action, ...args) {
@@ -355,7 +325,9 @@ chrome.downloads.onCreated.addListener(async downloadItem => {
     downloadItem.referrer,
     {
       allowProtocolFallback: false,
-      silent: false,
+      captureMode: "automatic",
+      cookieStoreId: downloadItem.cookieStoreId,
+      notifyOnFailure: false,
       filename
     }
   );

@@ -9,37 +9,54 @@ const backgroundSource = fs.readFileSync(
   "utf8"
 );
 
-function createBackgroundContext(signedFetch) {
+function createBackgroundContext(signedFetch, options = {}) {
   const createdTabs = [];
   const createdNotifications = [];
-  const notificationListeners = {};
+  const cookieQueries = [];
+  const downloadActions = [];
+  const listeners = {};
   const noopEvent = { addListener() {} };
   const chrome = {
     contextMenus: {
-      onClicked: noopEvent,
+      onClicked: {
+        addListener(listener) { listeners.contextMenu = listener; }
+      },
       create() {},
       removeAll(callback) { callback(); }
     },
     cookies: {
-      getAll(_details, callback) { callback([]); }
+      getAll(details, callback) {
+        cookieQueries.push(details);
+        callback(options.cookiesByUrl?.[details.url] || []);
+      }
     },
     downloads: {
-      onCreated: noopEvent
+      onCreated: {
+        addListener(listener) { listeners.downloadCreated = listener; }
+      },
+      pause(id, callback) {
+        downloadActions.push(["pause", id]);
+        callback();
+      },
+      resume(id, callback) {
+        downloadActions.push(["resume", id]);
+        callback();
+      },
+      cancel(id, callback) {
+        downloadActions.push(["cancel", id]);
+        callback();
+      },
+      erase(query, callback) {
+        downloadActions.push(["erase", query]);
+        callback();
+      }
     },
     notifications: {
-      create(...args) { createdNotifications.push(args); },
-      clear() {},
-      onButtonClicked: {
-        addListener(listener) { notificationListeners.button = listener; }
-      },
-      onClosed: {
-        addListener(listener) { notificationListeners.closed = listener; }
-      }
+      create(...args) { createdNotifications.push(args); }
     },
     runtime: {
       lastError: null,
-      onInstalled: noopEvent,
-      onMessage: noopEvent
+      onInstalled: noopEvent
     },
     scripting: {
       executeScript() {}
@@ -50,7 +67,8 @@ function createBackgroundContext(signedFetch) {
           callback({
             globalCapture: true,
             siteToggles: {},
-            extensionToken: "pairing-token"
+            extensionToken: "pairing-token",
+            ...options.settings
           });
         },
         set() {}
@@ -58,14 +76,20 @@ function createBackgroundContext(signedFetch) {
       onChanged: noopEvent
     },
     tabs: {
-      create(details) { createdTabs.push(details); },
+      create(details, callback) {
+        createdTabs.push(details);
+        chrome.runtime.lastError = options.protocolError
+          ? { message: options.protocolError }
+          : null;
+        callback?.();
+        chrome.runtime.lastError = null;
+      },
       sendMessage() {}
     }
   };
   const context = vm.createContext({
     AbortController,
     FirelinkProtocol: { signedFetch },
-    Math,
     URL,
     chrome,
     console,
@@ -77,9 +101,17 @@ function createBackgroundContext(signedFetch) {
     context,
     createdNotifications,
     createdTabs,
-    notificationListeners
+    cookieQueries,
+    downloadActions,
+    listeners
   };
 }
+
+test("starts without unsupported Firefox notification button APIs", () => {
+  const fixture = createBackgroundContext(async () => ({ ok: true }));
+  assert.equal(typeof fixture.listeners.contextMenu, "function");
+  assert.equal(typeof fixture.listeners.downloadCreated, "function");
+});
 
 test("successful direct handoff does not open a protocol tab", async () => {
   const fixture = createBackgroundContext(async () => ({ ok: true }));
@@ -94,7 +126,7 @@ test("successful direct handoff does not open a protocol tab", async () => {
   assert.equal(fixture.createdNotifications.length, 0);
 });
 
-test("offline manual handoff offers explicit fallback before opening protocol URL", async () => {
+test("offline manual handoff launches the registered Firelink protocol", async () => {
   const fixture = createBackgroundContext(async () => {
     throw { serverReached: false };
   });
@@ -104,29 +136,127 @@ test("offline manual handoff offers explicit fallback before opening protocol UR
     fixture.context
   );
 
-  assert.equal(accepted, false);
-  assert.equal(fixture.createdTabs.length, 0);
-  assert.equal(fixture.createdNotifications.length, 1);
-
-  const [notificationId, options] = fixture.createdNotifications[0];
-  assert.equal(options.buttons[0].title, "Use protocol fallback");
-
-  fixture.notificationListeners.button(notificationId, 0);
+  assert.equal(accepted, true);
   assert.equal(fixture.createdTabs.length, 1);
   assert.match(fixture.createdTabs[0].url, /^firelink:\/\/add\?/);
+  assert.equal(fixture.createdNotifications.length, 0);
 });
 
-test("automatic capture failure never opens or offers protocol fallback", async () => {
-  const fixture = createBackgroundContext(async () => {
-    throw { serverReached: false };
-  });
+test("reports a missing Firelink protocol registration", async () => {
+  const fixture = createBackgroundContext(
+    async () => {
+      throw { serverReached: false };
+    },
+    { protocolError: "Unknown protocol" }
+  );
 
   const accepted = await vm.runInContext(
-    'sendToFirelink(["https://example.com/file.zip"], "", { allowProtocolFallback: false, silent: true })',
+    'sendToFirelink(["https://example.com/file.zip"])',
     fixture.context
   );
 
   assert.equal(accepted, false);
+  assert.equal(fixture.createdNotifications.length, 1);
+  assert.equal(
+    fixture.createdNotifications[0][0].title,
+    "Could Not Open Firelink"
+  );
+});
+
+test("automatic capture failure resumes the browser download without fallback", async () => {
+  const fixture = createBackgroundContext(async () => {
+    throw { serverReached: false };
+  });
+
+  await fixture.listeners.downloadCreated({
+    id: 42,
+    url: "https://example.com/file.zip",
+    referrer: "https://example.com/page",
+    filename: "/tmp/file.zip"
+  });
+
+  assert.deepEqual(fixture.downloadActions, [
+    ["pause", 42],
+    ["resume", 42]
+  ]);
   assert.equal(fixture.createdTabs.length, 0);
   assert.equal(fixture.createdNotifications.length, 0);
+});
+
+test("automatic capture marks the payload silent but still confirms success", async () => {
+  let payload = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  });
+
+  await fixture.listeners.downloadCreated({
+    id: 7,
+    url: "https://example.com/file.zip",
+    referrer: "https://example.com/page",
+    filename: "/tmp/file.zip"
+  });
+
+  assert.equal(payload.silent, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.downloadActions)), [
+    ["pause", 7],
+    ["cancel", 7],
+    ["erase", { id: 7 }]
+  ]);
+  assert.equal(fixture.createdNotifications.length, 1);
+});
+
+test("never shares first-party cookies across a multi-host batch", async () => {
+  let payload = null;
+  const fixture = createBackgroundContext(
+    async (_path, _token, request) => {
+      payload = request.payload;
+      return { ok: true };
+    },
+    {
+      cookiesByUrl: {
+        "https://one.example/a.zip": [
+          { name: "session", value: "private" }
+        ]
+      }
+    }
+  );
+
+  await vm.runInContext(
+    'sendToFirelink(["https://one.example/a.zip", "https://two.example/b.zip"])',
+    fixture.context
+  );
+
+  assert.equal(payload.headers, "User-Agent: Firefox Test");
+  assert.equal(payload.cookies, undefined);
+});
+
+test("passes single-download cookies through the dedicated cookie field", async () => {
+  let payload = null;
+  const fixture = createBackgroundContext(
+    async (_path, _token, request) => {
+      payload = request.payload;
+      return { ok: true };
+    },
+    {
+      cookiesByUrl: {
+        "https://one.example/a.zip": [
+          { name: "session", value: "private" },
+          { name: "locale", value: "en" }
+        ]
+      }
+    }
+  );
+
+  await vm.runInContext(
+    'sendToFirelink(["https://one.example/a.zip"], "", { cookieStoreId: "firefox-container-2" })',
+    fixture.context
+  );
+
+  assert.equal(payload.cookies, "session=private; locale=en");
+  assert.doesNotMatch(payload.headers, /Cookie:/);
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.cookieQueries)), [{
+    url: "https://one.example/a.zip",
+    storeId: "firefox-container-2"
+  }]);
 });

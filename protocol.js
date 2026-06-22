@@ -2,7 +2,12 @@
   const START_PORT = 6412;
   const END_PORT = 6422;
   const ENDPOINT = `http://127.0.0.1:${START_PORT}`;
-  const DEFAULT_TIMEOUT_MS = 2500;
+  const SERVER_HEADER = "X-Firelink-Server";
+  const SERVER_HEADER_VALUE = "1";
+  const DISCOVERY_TIMEOUT_MS = 750;
+  const REQUEST_TIMEOUT_MS = 5000;
+
+  let preferredPort = null;
 
   class FirelinkRequestError extends Error {
     constructor(message, status = null, serverReached = false) {
@@ -32,14 +37,22 @@
       .join("");
   }
 
-  async function signedFetch(path, token, options = {}) {
+  function isFirelinkResponse(response) {
+    return response.headers.get(SERVER_HEADER) === SERVER_HEADER_VALUE;
+  }
+
+  async function requestAtPort(port, path, token, options = {}) {
     const method = options.method || "GET";
     const body = options.payload === undefined
       ? ""
       : JSON.stringify(options.payload);
     const timestamp = Date.now().toString();
     const signature = await generateHMAC(token, timestamp, body);
-    const timeoutMs = options.timeoutMs || DEFAULT_TIMEOUT_MS;
+    const controller = options.controller || new AbortController();
+    const timeout = setTimeout(
+      () => controller.abort(),
+      options.timeoutMs || REQUEST_TIMEOUT_MS
+    );
 
     const headers = {
       "X-Firelink-Signature": signature,
@@ -49,61 +62,106 @@
       headers["Content-Type"] = "application/json";
     }
 
-    let lastError = null;
+    try {
+      controller.signal.throwIfAborted();
+      return await fetch(`http://127.0.0.1:${port}${path}`, {
+        method,
+        headers,
+        body: body || undefined,
+        cache: "no-store",
+        signal: controller.signal
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
 
-    for (let port = START_PORT; port <= END_PORT; port += 1) {
-      const endpoint = `http://127.0.0.1:${port}`;
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  async function probePort(port, token, controller) {
+    const response = await requestAtPort(port, "/ping", token, {
+      controller,
+      timeoutMs: DISCOVERY_TIMEOUT_MS
+    });
+    if (!isFirelinkResponse(response)) {
+      throw new Error("Not a Firelink server");
+    }
+    return { port, response };
+  }
 
+  async function discoverServer(token) {
+    if (preferredPort !== null) {
       try {
-        const response = await fetch(`${endpoint}${path}`, {
-          method,
-          headers,
-          body: body || undefined,
-          cache: "no-store",
-          signal: controller.signal
-        });
-
-        if (!response.ok) {
-          const requestError = new FirelinkRequestError(
-            `Firelink rejected request with HTTP ${response.status}`,
-            response.status,
-            true
-          );
-          if (response.status === 403) {
-            throw requestError;
-          }
-          lastError = requestError;
-          continue;
-        }
-
-        return response;
+        return await probePort(preferredPort, token, new AbortController());
       } catch (error) {
-        if (error instanceof FirelinkRequestError) {
-          throw error;
-        }
-        lastError = error;
-      } finally {
-        clearTimeout(timeout);
+        preferredPort = null;
       }
     }
 
-    if (lastError instanceof FirelinkRequestError) {
-      throw lastError;
+    const controllers = [];
+    const probes = [];
+    for (let port = START_PORT; port <= END_PORT; port += 1) {
+      const controller = new AbortController();
+      controllers.push(controller);
+      probes.push(probePort(port, token, controller));
     }
 
-    throw new FirelinkRequestError(
-      lastError && lastError.name === "AbortError"
-        ? "Firelink request timed out"
-        : "Firelink is unavailable"
+    try {
+      const server = await Promise.any(probes);
+      controllers.forEach(controller => controller.abort());
+      preferredPort = server.port;
+      return server;
+    } catch (error) {
+      controllers.forEach(controller => controller.abort());
+      throw new FirelinkRequestError("Firelink is unavailable");
+    }
+  }
+
+  function rejectedResponse(response) {
+    return new FirelinkRequestError(
+      `Firelink rejected request with HTTP ${response.status}`,
+      response.status,
+      true
     );
+  }
+
+  async function signedFetch(path, token, options = {}) {
+    const server = await discoverServer(token);
+    if (server.response.status === 403) {
+      throw rejectedResponse(server.response);
+    }
+    if (!server.response.ok) {
+      throw rejectedResponse(server.response);
+    }
+    if (path === "/ping") {
+      return server.response;
+    }
+
+    let response;
+    try {
+      response = await requestAtPort(server.port, path, token, options);
+    } catch (error) {
+      preferredPort = null;
+      throw new FirelinkRequestError(
+        error && error.name === "AbortError"
+          ? "Firelink request timed out"
+          : "Firelink is unavailable"
+      );
+    }
+
+    if (!isFirelinkResponse(response)) {
+      preferredPort = null;
+      throw new FirelinkRequestError("Firelink connection identity changed");
+    }
+    if (!response.ok) {
+      throw rejectedResponse(response);
+    }
+    return response;
   }
 
   const api = {
     START_PORT,
     END_PORT,
     ENDPOINT,
+    SERVER_HEADER,
     FirelinkRequestError,
     generateHMAC,
     signedFetch
