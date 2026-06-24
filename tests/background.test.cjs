@@ -352,8 +352,10 @@ test("automatic capture failure resumes the browser download without fallback", 
 
 test("automatic capture marks the payload silent but still confirms success", async () => {
   let payload = null;
+  let requiredProtocolVersion = null;
   const fixture = createBackgroundContext(async (_path, _token, request) => {
     payload = request.payload;
+    requiredProtocolVersion = request.requiredProtocolVersion;
     return { ok: true };
   });
 
@@ -365,6 +367,7 @@ test("automatic capture marks the payload silent but still confirms success", as
   });
 
   assert.equal(payload.silent, true);
+  assert.equal(requiredProtocolVersion, 2);
   assert.deepEqual(JSON.parse(JSON.stringify(fixture.downloadActions)), [
     ["pause", 7],
     ["cancel", 7],

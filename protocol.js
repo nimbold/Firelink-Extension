@@ -4,6 +4,7 @@
   const ENDPOINT = `http://127.0.0.1:${START_PORT}`;
   const SERVER_HEADER = "X-Firelink-Server";
   const SERVER_HEADER_VALUE = "1";
+  const PROTOCOL_VERSION_HEADER = "X-Firelink-Protocol-Version";
   const DISCOVERY_TIMEOUT_MS = 750;
   const REQUEST_TIMEOUT_MS = 5000;
 
@@ -40,6 +41,22 @@
 
   function isFirelinkResponse(response) {
     return response.headers.get(SERVER_HEADER) === SERVER_HEADER_VALUE;
+  }
+
+  function protocolVersion(response) {
+    const value = Number(response.headers.get(PROTOCOL_VERSION_HEADER) || "0");
+    return Number.isFinite(value) ? value : 0;
+  }
+
+  function requireProtocolVersion(response, minimumVersion) {
+    if (!minimumVersion || protocolVersion(response) >= minimumVersion) {
+      return;
+    }
+    throw new FirelinkRequestError(
+      "Firelink desktop app must be updated for automatic capture",
+      426,
+      true
+    );
   }
 
   async function requestAtPort(port, path, token, options = {}) {
@@ -132,6 +149,7 @@
     if (!server.response.ok) {
       throw rejectedResponse(server.response);
     }
+    requireProtocolVersion(server.response, options.requiredProtocolVersion);
     if (path === "/ping") {
       return server.response;
     }
@@ -155,6 +173,7 @@
       preferredPort = null;
       throw new FirelinkRequestError("Firelink connection identity changed");
     }
+    requireProtocolVersion(response, options.requiredProtocolVersion);
     if (!response.ok) {
       throw rejectedResponse(response);
     }
@@ -166,8 +185,10 @@
     END_PORT,
     ENDPOINT,
     SERVER_HEADER,
+    PROTOCOL_VERSION_HEADER,
     FirelinkRequestError,
     generateHMAC,
+    protocolVersion,
     signedFetch
   };
 

@@ -2,6 +2,16 @@
 
 All notable changes to Firelink Companion will be documented in this file.
 
+## [1.0.15] - 2026-06-24
+
+### Compliance
+
+- Remove remote Google Fonts import so the extension package is fully self-contained at runtime.
+- Correct Mozilla data-collection declaration for the required local handoff of download URLs, referrers, cookies, and request metadata to the Firelink app.
+- Require Firefox 140+ on desktop and Firefox for Android 142+ so Mozilla's built-in data-collection consent prompt is available.
+- Drop unused `activeTab` permission; existing host access covers the current content-script and cookie handoff flows.
+- Require the desktop app's protocol v2 contract before automatic browser captures can cancel the browser download.
+
 ## [1.0.14] - 2026-06-22
 
 ### Fixes

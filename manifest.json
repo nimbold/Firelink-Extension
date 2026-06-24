@@ -1,13 +1,12 @@
 {
   "manifest_version": 3,
   "name": "Firelink Companion",
-  "version": "1.0.14",
+  "version": "1.0.15",
   "description": "Capture downloads and links directly to Firelink download manager.",
   "permissions": [
     "downloads",
     "contextMenus",
     "storage",
-    "activeTab",
     "scripting",
     "notifications",
     "cookies"
@@ -57,9 +56,13 @@
   "browser_specific_settings": {
     "gecko": {
       "id": "firelink@nimbold.github.io",
+      "strict_min_version": "140.0",
       "data_collection_permissions": {
-        "required": ["none"]
+        "required": ["personallyIdentifyingInfo"]
       }
+    },
+    "gecko_android": {
+      "strict_min_version": "142.0"
     }
   }
 }

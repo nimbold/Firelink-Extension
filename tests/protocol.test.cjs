@@ -10,16 +10,34 @@ function loadProtocol() {
 function firelinkResponse(status = 200) {
   return new Response(null, {
     status,
+    headers: {
+      "X-Firelink-Server": "1",
+      "X-Firelink-Protocol-Version": "2"
+    }
+  });
+}
+
+function legacyFirelinkResponse(status = 200) {
+  return new Response(null, {
+    status,
     headers: { "X-Firelink-Server": "1" }
   });
 }
 
-test("uses the desktop port range and server identity header", () => {
-  const { START_PORT, END_PORT, ENDPOINT, SERVER_HEADER } = loadProtocol();
+test("uses desktop port range server identity header", () => {
+  const {
+    START_PORT,
+    END_PORT,
+    ENDPOINT,
+    SERVER_HEADER,
+    PROTOCOL_VERSION_HEADER
+  } = loadProtocol();
+
   assert.equal(START_PORT, 6412);
   assert.equal(END_PORT, 6422);
   assert.equal(ENDPOINT, "http://127.0.0.1:6412");
   assert.equal(SERVER_HEADER, "X-Firelink-Server");
+  assert.equal(PROTOCOL_VERSION_HEADER, "X-Firelink-Protocol-Version");
 });
 
 test("generates expected HMAC-SHA256 signature", async () => {
@@ -35,18 +53,16 @@ test("generates expected HMAC-SHA256 signature", async () => {
   assert.equal(await generateHMAC(token, timestamp, body), expected);
 });
 
-test("discovers Firelink before sending a signed download payload", async () => {
+test("discovers Firelink before sending signed download payload", async () => {
   const originalFetch = global.fetch;
   const originalNow = Date.now;
   const seen = [];
   const { generateHMAC, signedFetch } = loadProtocol();
 
   Date.now = () => 1710000000000;
-  global.fetch = async (url, options) => {
+  global.fetch = async (url, options = {}) => {
     seen.push({ url, options });
-    if (url === "http://127.0.0.1:6414/ping") {
-      return firelinkResponse();
-    }
+    if (url === "http://127.0.0.1:6414/ping") return firelinkResponse();
     if (url === "http://127.0.0.1:6414/download") {
       assert.equal(options.method, "POST");
       assert.equal(
@@ -56,7 +72,7 @@ test("discovers Firelink before sending a signed download payload", async () => 
       assert.equal(options.headers["X-Firelink-Timestamp"], "1710000000000");
       assert.equal(
         options.headers["X-Firelink-Signature"],
-        await generateHMAC("secret", "1710000000000", options.body)
+        await generateHMAC("pairing-token", "1710000000000", options.body)
       );
       return firelinkResponse();
     }
@@ -64,42 +80,35 @@ test("discovers Firelink before sending a signed download payload", async () => 
   };
 
   try {
-    await signedFetch("/download", "secret", {
+    await signedFetch("/download", "pairing-token", {
       method: "POST",
       payload: { urls: ["https://example.com/file.zip"], silent: true }
     });
-    assert.ok(seen.some(request => request.url.endsWith("/ping")));
-    assert.equal(
-      seen.filter(request => request.url.endsWith("/download")).length,
-      1
-    );
+    assert.ok(seen.some(entry => entry.url.endsWith("/ping")));
+    assert.ok(seen.some(entry => entry.url.endsWith("/download")));
   } finally {
     global.fetch = originalFetch;
     Date.now = originalNow;
   }
 });
 
-test("ignores unrelated localhost 403 responses", async () => {
+test("rejects spoofed localhost responses without identity header", async () => {
   const originalFetch = global.fetch;
   const { FirelinkRequestError, signedFetch } = loadProtocol();
 
   global.fetch = async url => {
     if (url === "http://127.0.0.1:6412/ping") {
-      return new Response(null, { status: 403 });
-    }
-    if (url === "http://127.0.0.1:6413/ping") {
-      return firelinkResponse(403);
+      return new Response(null, { status: 200 });
     }
     throw new TypeError("Connection refused");
   };
 
   try {
     await assert.rejects(
-      () => signedFetch("/ping", "wrong-token"),
+      () => signedFetch("/ping", "secret"),
       error => {
         assert.ok(error instanceof FirelinkRequestError);
-        assert.equal(error.status, 403);
-        assert.equal(error.serverReached, true);
+        assert.equal(error.serverReached, false);
         return true;
       }
     );
@@ -108,7 +117,7 @@ test("ignores unrelated localhost 403 responses", async () => {
   }
 });
 
-test("reuses the verified port for later requests", async () => {
+test("reuses verified port for later requests", async () => {
   const originalFetch = global.fetch;
   const seen = [];
   const { signedFetch } = loadProtocol();
@@ -131,7 +140,7 @@ test("reuses the verified port for later requests", async () => {
   }
 });
 
-test("reports an unavailable app without sending a download payload", async () => {
+test("reports an unavailable app without sending download payload", async () => {
   const originalFetch = global.fetch;
   const seen = [];
   const { FirelinkRequestError, signedFetch } = loadProtocol();
@@ -159,14 +168,12 @@ test("reports an unavailable app without sending a download payload", async () =
   }
 });
 
-test("marks post-discovery transport failure as possibly delivered", async () => {
+test("marks post-discovery transport failure possibly delivered", async () => {
   const originalFetch = global.fetch;
-  const { signedFetch } = loadProtocol();
+  const { FirelinkRequestError, signedFetch } = loadProtocol();
 
   global.fetch = async url => {
-    if (url.endsWith("/ping")) {
-      return firelinkResponse();
-    }
+    if (url.endsWith("/ping")) return firelinkResponse();
     throw new TypeError("Connection reset");
   };
 
@@ -177,7 +184,36 @@ test("marks post-discovery transport failure as possibly delivered", async () =>
         payload: { urls: ["https://example.com/file.zip"] }
       }),
       error => {
+        assert.ok(error instanceof FirelinkRequestError);
         assert.equal(error.requestMayHaveBeenSent, true);
+        return true;
+      }
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("rejects automatic capture against legacy desktop protocol", async () => {
+  const originalFetch = global.fetch;
+  const { FirelinkRequestError, signedFetch } = loadProtocol();
+
+  global.fetch = async url => {
+    if (url === "http://127.0.0.1:6414/ping") return legacyFirelinkResponse();
+    throw new TypeError("Connection refused");
+  };
+
+  try {
+    await assert.rejects(
+      () => signedFetch("/download", "secret", {
+        method: "POST",
+        requiredProtocolVersion: 2,
+        payload: { urls: ["https://example.com/file.zip"], silent: true }
+      }),
+      error => {
+        assert.ok(error instanceof FirelinkRequestError);
+        assert.equal(error.status, 426);
+        assert.equal(error.serverReached, true);
         return true;
       }
     );

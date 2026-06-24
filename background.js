@@ -352,10 +352,23 @@ async function sendToFirelink(urls, referer = "", options = {}) {
   try {
     await FirelinkProtocol.signedFetch("/download", cachedSettings.extensionToken, {
       method: "POST",
-      payload
+      payload,
+      requiredProtocolVersion: captureMode === "automatic" ? 2 : undefined
     });
     return true;
   } catch (error) {
+    if (error.serverReached && error.status === 426) {
+      if (notifyOnFailure) {
+        chrome.notifications.create({
+          type: "basic",
+          iconUrl: "icons/icon-128.png",
+          title: "Firelink Update Required",
+          message: "Update the Firelink desktop app to use automatic browser capture."
+        });
+      }
+      return false;
+    }
+
     if (error.serverReached && error.status === 403) {
       if (notifyOnFailure) {
         notify("Firelink Connection Rejected", "Your pairing token is invalid. Update it in the Firelink extension popup.");
