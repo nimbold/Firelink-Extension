@@ -367,7 +367,7 @@ test("automatic capture marks the payload silent but still confirms success", as
   });
 
   assert.equal(payload.silent, true);
-  assert.equal(requiredProtocolVersion, 2);
+  assert.equal(requiredProtocolVersion, 3);
   assert.deepEqual(JSON.parse(JSON.stringify(fixture.downloadActions)), [
     ["pause", 7],
     ["cancel", 7],

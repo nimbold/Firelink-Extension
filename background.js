@@ -353,7 +353,7 @@ async function sendToFirelink(urls, referer = "", options = {}) {
     await FirelinkProtocol.signedFetch("/download", cachedSettings.extensionToken, {
       method: "POST",
       payload,
-      requiredProtocolVersion: captureMode === "automatic" ? 2 : undefined
+      requiredProtocolVersion: captureMode === "automatic" ? 3 : undefined
     });
     return true;
   } catch (error) {
@@ -363,7 +363,7 @@ async function sendToFirelink(urls, referer = "", options = {}) {
           type: "basic",
           iconUrl: "icons/icon-128.png",
           title: "Firelink Update Required",
-          message: "Update the Firelink desktop app to use automatic browser capture."
+          message: "Update the Firelink desktop app to use browser integration."
         });
       }
       return false;

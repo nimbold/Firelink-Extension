@@ -5,6 +5,11 @@
   const SERVER_HEADER = "X-Firelink-Server";
   const SERVER_HEADER_VALUE = "1";
   const PROTOCOL_VERSION_HEADER = "X-Firelink-Protocol-Version";
+  const CLIENT_NONCE_HEADER = "X-Firelink-Client-Nonce";
+  const SERVER_PROOF_HEADER = "X-Firelink-Server-Proof";
+  const SERVER_PORT_HEADER = "X-Firelink-Server-Port";
+  const SERVER_PROOF_PREFIX = "firelink-server-proof";
+  const PROTOCOL_VERSION = 3;
   const DISCOVERY_TIMEOUT_MS = 750;
   const REQUEST_TIMEOUT_MS = 5000;
 
@@ -20,7 +25,7 @@
     }
   }
 
-  async function generateHMAC(token, timestamp, body) {
+  async function generateHMACMessage(token, message) {
     const encoder = new TextEncoder();
     const key = await crypto.subtle.importKey(
       "raw",
@@ -32,9 +37,28 @@
     const signature = await crypto.subtle.sign(
       "HMAC",
       key,
-      encoder.encode(timestamp + body)
+      encoder.encode(message)
     );
     return Array.from(new Uint8Array(signature))
+      .map(byte => byte.toString(16).padStart(2, "0"))
+      .join("");
+  }
+
+  async function generateHMAC(token, timestamp, body) {
+    return generateHMACMessage(token, timestamp + body);
+  }
+
+  async function generateServerProof(token, timestamp, nonce, port) {
+    return generateHMACMessage(
+      token,
+      `${SERVER_PROOF_PREFIX}\n${timestamp}\n${nonce}\n${port}`
+    );
+  }
+
+  function generateNonce() {
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    return Array.from(bytes)
       .map(byte => byte.toString(16).padStart(2, "0"))
       .join("");
   }
@@ -59,12 +83,35 @@
     );
   }
 
+  async function verifyServerProof(response, token, timestamp, nonce, port) {
+    if (!isFirelinkResponse(response)) {
+      throw new Error("Not a Firelink server");
+    }
+
+    requireProtocolVersion(response, PROTOCOL_VERSION);
+
+    const reportedPort = Number(response.headers.get(SERVER_PORT_HEADER));
+    const actualProof = response.headers.get(SERVER_PROOF_HEADER) || "";
+    const expectedProof = await generateServerProof(token, timestamp, nonce, port);
+    if (
+      reportedPort !== port ||
+      !/^[a-f0-9]{64}$/i.test(actualProof) ||
+      actualProof.toLowerCase() !== expectedProof
+    ) {
+      throw new FirelinkRequestError(
+        "Firelink desktop app identity could not be verified",
+        426,
+        true
+      );
+    }
+  }
+
   async function requestAtPort(port, path, token, options = {}) {
     const method = options.method || "GET";
     const body = options.payload === undefined
       ? ""
       : JSON.stringify(options.payload);
-    const timestamp = Date.now().toString();
+    const timestamp = options.timestamp || Date.now().toString();
     const signature = await generateHMAC(token, timestamp, body);
     const controller = options.controller || new AbortController();
     const timeout = setTimeout(
@@ -76,6 +123,9 @@
       "X-Firelink-Signature": signature,
       "X-Firelink-Timestamp": timestamp
     };
+    if (options.clientNonce) {
+      headers[CLIENT_NONCE_HEADER] = options.clientNonce;
+    }
     if (body) {
       headers["Content-Type"] = "application/json";
     }
@@ -95,13 +145,15 @@
   }
 
   async function probePort(port, token, controller) {
+    const timestamp = Date.now().toString();
+    const nonce = generateNonce();
     const response = await requestAtPort(port, "/ping", token, {
       controller,
+      timestamp,
+      clientNonce: nonce,
       timeoutMs: DISCOVERY_TIMEOUT_MS
     });
-    if (!isFirelinkResponse(response)) {
-      throw new Error("Not a Firelink server");
-    }
+    await verifyServerProof(response, token, timestamp, nonce, port);
     return { port, response };
   }
 
@@ -129,6 +181,14 @@
       return server;
     } catch (error) {
       controllers.forEach(controller => controller.abort());
+      const protocolError = error.errors?.find(
+        candidate => candidate instanceof FirelinkRequestError
+          && candidate.status === 426
+          && candidate.serverReached
+      );
+      if (protocolError) {
+        throw protocolError;
+      }
       throw new FirelinkRequestError("Firelink is unavailable");
     }
   }
@@ -186,8 +246,13 @@
     ENDPOINT,
     SERVER_HEADER,
     PROTOCOL_VERSION_HEADER,
+    CLIENT_NONCE_HEADER,
+    SERVER_PROOF_HEADER,
+    SERVER_PORT_HEADER,
+    PROTOCOL_VERSION,
     FirelinkRequestError,
     generateHMAC,
+    generateServerProof,
     protocolVersion,
     signedFetch
   };
