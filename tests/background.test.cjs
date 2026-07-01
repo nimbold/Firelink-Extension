@@ -330,9 +330,22 @@ test("concurrent manual actions share one launch and deliver each payload once",
   assert.deepEqual(fixture.removedTabs, [1]);
 });
 
-test("automatic capture failure resumes the browser download without fallback", async () => {
-  const fixture = createBackgroundContext(async () => {
-    throw { serverReached: false };
+test("automatic capture launches Firelink when the desktop app is closed", async () => {
+  let directDownloadAttempts = 0;
+  let deliveredPayload = null;
+  let deliveredProtocolVersion = null;
+  const fixture = createBackgroundContext(async (path, _token, request) => {
+    if (path === "/download" && directDownloadAttempts === 0) {
+      directDownloadAttempts += 1;
+      throw { serverReached: false, requestMayHaveBeenSent: false };
+    }
+
+    if (path === "/download") {
+      deliveredPayload = request.payload;
+      deliveredProtocolVersion = request.requiredProtocolVersion;
+    }
+
+    return { ok: true };
   });
 
   await fixture.listeners.downloadCreated({
@@ -342,12 +355,16 @@ test("automatic capture failure resumes the browser download without fallback", 
     filename: "/tmp/file.zip"
   });
 
-  assert.deepEqual(fixture.downloadActions, [
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.downloadActions)), [
     ["pause", 42],
-    ["resume", 42]
+    ["cancel", 42],
+    ["erase", { id: 42 }]
   ]);
-  assert.equal(fixture.createdTabs.length, 0);
-  assert.equal(fixture.createdNotifications.length, 0);
+  assert.equal(fixture.createdTabs.length, 1);
+  assert.deepEqual(fixture.removedTabs, [1]);
+  assert.equal(deliveredPayload.silent, true);
+  assert.equal(deliveredProtocolVersion, 3);
+  assert.equal(fixture.createdNotifications.length, 1);
 });
 
 test("automatic capture marks the payload silent but still confirms success", async () => {

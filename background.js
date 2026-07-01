@@ -209,7 +209,8 @@ async function deliverAfterStartup(entry, deadline) {
     try {
       await FirelinkProtocol.signedFetch("/download", entry.token, {
         method: "POST",
-        payload: entry.payload
+        payload: entry.payload,
+        requiredProtocolVersion: entry.requiredProtocolVersion
       });
       return true;
     } catch (error) {
@@ -223,7 +224,7 @@ async function deliverAfterStartup(entry, deadline) {
   throw new Error("Firelink launch timed out");
 }
 
-function enqueueLaunchDelivery(token, payload) {
+function enqueueLaunchDelivery(token, payload, requiredProtocolVersion) {
   return new Promise(resolve => {
     if (!launchSession) {
       launchSession = {
@@ -234,6 +235,7 @@ function enqueueLaunchDelivery(token, payload) {
     launchSession.entries.push({
       token,
       payload: Object.freeze({ ...payload, urls: Object.freeze([...payload.urls]) }),
+      requiredProtocolVersion,
       resolve
     });
     if (!launchSession.running) {
@@ -349,11 +351,13 @@ async function sendToFirelink(urls, referer = "", options = {}) {
     cookies: cookieString || undefined
   };
 
+  const requiredProtocolVersion = captureMode === "automatic" ? 3 : undefined;
+
   try {
     await FirelinkProtocol.signedFetch("/download", cachedSettings.extensionToken, {
       method: "POST",
       payload,
-      requiredProtocolVersion: captureMode === "automatic" ? 3 : undefined
+      requiredProtocolVersion
     });
     return true;
   } catch (error) {
@@ -376,10 +380,10 @@ async function sendToFirelink(urls, referer = "", options = {}) {
       return false;
     }
 
-    if (captureMode === "manual" && error.serverReached && error.status === 503) {
+    if (error.serverReached && error.status === 503) {
       try {
         return await deliverAfterStartup(
-          { token: cachedSettings.extensionToken, payload },
+          { token: cachedSettings.extensionToken, payload, requiredProtocolVersion },
           Date.now() + LAUNCH_TIMEOUT_MS
         );
       } catch (retryError) {
@@ -391,7 +395,6 @@ async function sendToFirelink(urls, referer = "", options = {}) {
     }
 
     const canUseProtocol = allowProtocolFallback
-      && captureMode === "manual"
       && !error.serverReached
       && !error.requestMayHaveBeenSent;
     if (canUseProtocol) {
@@ -404,7 +407,7 @@ async function sendToFirelink(urls, referer = "", options = {}) {
         }
         return false;
       }
-      return enqueueLaunchDelivery(cachedSettings.extensionToken, payload);
+      return enqueueLaunchDelivery(cachedSettings.extensionToken, payload, requiredProtocolVersion);
     }
 
     if (notifyOnFailure) {
@@ -509,7 +512,7 @@ chrome.downloads.onCreated.addListener(async downloadItem => {
     [downloadItem.url],
     downloadItem.referrer,
     {
-      allowProtocolFallback: false,
+      allowProtocolFallback: true,
       captureMode: "automatic",
       cookieStoreId: downloadItem.cookieStoreId,
       notifyOnFailure: false,
