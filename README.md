@@ -1,58 +1,106 @@
 <div align="center">
-  <img src="icons/icon-128.png" alt="Firelink Companion Icon" width="128" height="128" />
-  <h1>Firelink Companion</h1>
+  <img src="icons/icon-128.png" alt="Firelink Companion" width="128" height="128" />
+
+  # Firelink Companion
+
+  **The browser bridge for Firelink's desktop download manager.**
+
+  [![Version](https://img.shields.io/badge/version-2.0.0-6f42c1?style=flat-square)](https://github.com/nimbold/Firelink-Extension/releases)
+  [![Firefox](https://img.shields.io/badge/Firefox-140%2B-FF7139?style=flat-square&logo=firefox-browser&logoColor=white)](https://addons.mozilla.org/en-US/firefox/addon/firelink-companion/)
+  [![Manifest V3](https://img.shields.io/badge/Manifest-V3-4285F4?style=flat-square)](manifest.json)
+  [![License](https://img.shields.io/github/license/nimbold/Firelink-Extension?style=flat-square)](LICENSE)
+
+  <a href="https://addons.mozilla.org/en-US/firefox/addon/firelink-companion/"><img src="https://img.shields.io/badge/Install%20on%20Firefox-FF7139?logo=firefox-browser&logoColor=white&style=for-the-badge" alt="Install Firelink Companion on Firefox" /></a>
 </div>
 
-This repository contains the standalone development files and releases for the **Firelink Companion** browser extension.
+## What It Does
 
----
+Firelink Companion sends browser downloads and selected links to the native [Firelink](https://github.com/nimbold/Firelink) desktop app. It is designed for Firelink 1.0.0 and newer, where every captured link opens in the desktop Add window first so the user can review metadata, choose a location, and decide whether to start immediately or queue it.
 
-## ⚡ Overview
+The extension focuses on a narrow job: capture the right browser event, authenticate the local handoff, and protect the browser download unless Firelink confirms it accepted the request.
 
-Firelink Companion bridges the gap between your web browser and the native **[Firelink](https://github.com/nimbold/Firelink)** macOS download manager.
+## Highlights
 
-It intelligently intercepts browser downloads, captures media URLs, and forwards them directly to the native app, allowing you to bypass your browser's default manager and harness the full power of Firelink's multi-segmented `aria2` and `yt-dlp` engines.
+- **Automatic download capture** for normal browser downloads.
+- **Context-menu actions** for single links and selected text containing links.
+- **Firefox Manifest V3 support** with no remote code or remote fonts.
+- **Signed localhost requests** using HMAC-SHA256 and the pairing token from Firelink.
+- **Desktop identity checks** so the extension only trusts the real Firelink local server.
+- **Protocol compatibility checks** that reject older desktop builds before automatic captures can cancel browser downloads.
+- **Offline-safe fallback** that resumes browser downloads when Firelink is closed, unavailable, or rejects the request.
+- **Container-aware cookie handoff** for automatic single-download captures only.
+- **Dynamic local port discovery** across `127.0.0.1:6412-6422`.
 
----
+## Compatibility
 
-## 🌟 Current Status (v1.0.14)
+| Component | Requirement |
+| --- | --- |
+| Firelink desktop app | `1.0.0` or newer |
+| Firelink local protocol | v3 for automatic captures |
+| Firefox desktop | 140 or newer |
+| Firefox for Android | 142 or newer |
 
-The extension has been updated to **v1.0.14** with robust performance and security enhancements:
-- **HMAC-SHA256 Authentication**: All requests to the native Firelink app are now cryptographically signed using the Web Crypto API to ensure maximum security against replay and CSRF attacks.
-- **Local API Port Range**: The desktop app and extension communicate through `127.0.0.1:6412-6422`.
-- **Context-Aware Behavior**: Automatic captures resume in Firefox when Firelink is unavailable, while explicit “Download with Firelink” actions can launch the native app through its registered protocol.
-- **Firefox MV3 Optimized**: 100% compliant with strict Manifest V3 Content Security Policies and optimized Event Page architectures.
-- **Zero Race Conditions**: Secure async state handling guarantees your capture settings are strictly respected even upon background wakeup.
-- **Duplicate Prevention**: Browser downloads are paused during handoff and are canceled only after Firelink confirms acceptance.
-- **Connection Check**: The popup verifies the local app through `/ping` with the new signature model, showing clear connection states.
+> [!IMPORTANT]
+> Version 2.0.0 is a breaking extension release. Automatic capture requires the Firelink 1.0 local protocol. Update the desktop app and the extension together.
 
----
+## Installation
 
-## 🚀 Installation
-
-We are officially live on the Mozilla Add-on store!
+Install the published add-on from Mozilla:
 
 <div align="center">
-  <a href="https://addons.mozilla.org/en-US/firefox/addon/firelink-companion/"><img src="https://img.shields.io/badge/Install%20on%20Firefox-FF7139?logo=firefox-browser&logoColor=white&style=for-the-badge" alt="Install on Firefox" /></a>
+  <a href="https://addons.mozilla.org/en-US/firefox/addon/firelink-companion/"><img src="https://img.shields.io/badge/Install%20Firelink%20Companion-Firefox-FF7139?logo=firefox-browser&logoColor=white&style=for-the-badge" alt="Install Firelink Companion on Firefox" /></a>
 </div>
 
-### Manual/Developer Installation
-If you wish to test unreleased features or modify the extension yourself:
-1. Download the latest source code or clone the repository.
-2. Open Firefox and navigate to `about:debugging#/runtime/this-firefox`.
-3. Click on **Load Temporary Add-on...**
-4. Select the `manifest.json` file from the directory.
-5. Open Firelink Settings → Integration, copy the pairing token, then paste it into the extension popup.
+Then pair it with Firelink:
 
-### First offline launch
+1. Open Firelink.
+2. Go to **Settings -> Integrations**.
+3. Copy the pairing token.
+4. Open the Firelink Companion popup in Firefox.
+5. Paste the token and save.
 
-When Firelink is closed and you explicitly choose **Download with Firelink**, Firefox displays an external-protocol security confirmation before opening `firelink://launch`. Approve it and enable **Always allow this extension to open firelink links** if offered. Firefox owns this permission prompt; Firelink cannot suppress or bypass it.
+## Manual Developer Installation
 
-If launch repeatedly times out, open Firelink once manually, verify it is installed as the `firelink://` handler, and confirm Firefox retained protocol permission before retrying.
+Use this flow for local testing or add-on review work:
 
-*Note: Temporary installations reset when you restart your browser. Support for Chrome/Safari is planned for the future.*
+1. Clone this repository.
+2. Open Firefox and go to `about:debugging#/runtime/this-firefox`.
+3. Click **Load Temporary Add-on...**.
+4. Select `manifest.json`.
+5. Pair the temporary extension from Firelink **Settings -> Integrations**.
 
----
+Temporary Firefox add-ons are removed when the browser restarts.
 
-## 📄 License
-Released under the MIT License.
+## Offline Launch Notes
+
+When Firelink is closed and you explicitly choose **Download with Firelink**, Firefox may show an external-protocol confirmation before opening `firelink://launch`. Approve it and enable **Always allow this extension to open firelink links** if Firefox offers that option.
+
+Firefox owns this permission prompt; Firelink Companion cannot suppress or bypass it. If launch repeatedly times out, open Firelink once manually, confirm it is registered as the `firelink://` handler, and retry the browser action.
+
+## Development
+
+Run syntax checks and tests:
+
+```sh
+npm test
+npm run check
+```
+
+Package contents for release are generated by `.github/workflows/release.yml` and include:
+
+```text
+background.js
+content.js
+icons/
+manifest.json
+popup/
+protocol.js
+```
+
+## Privacy
+
+Firelink Companion handles URLs, referrers, selected link text, filenames, request headers, and cookies only to deliver the chosen browser download to the local Firelink app. It does not send that data to a remote service. Cookie forwarding is intentionally narrow and is limited to automatic single-download captures where the desktop app needs the browser session to fetch the same file.
+
+## License
+
+Firelink Companion is available under the [MIT License](LICENSE).

@@ -338,7 +338,8 @@ async function sendToFirelink(urls, referer = "", options = {}) {
     return false;
   }
 
-  const cookieString = normalizedURLs.length === 1
+  const shouldForwardCookies = captureMode === "automatic" && normalizedURLs.length === 1;
+  const cookieString = shouldForwardCookies
     ? await collectCookieHeader(normalizedURLs[0], options.cookieStoreId)
     : "";
 

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Firelink Companion",
-  "version": "1.0.15",
-  "description": "Capture downloads and links directly to Firelink download manager.",
+  "version": "2.0.0",
+  "description": "Send browser downloads and links to the Firelink desktop download manager.",
   "permissions": [
     "downloads",
     "contextMenus",

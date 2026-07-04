@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version, for example 1.0.8"
+        description: "Release version, for example 2.0.0"
         required: true
-        default: "1.0.8"
+        default: "2.0.0"
 
 jobs:
   release:
@@ -21,7 +21,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Create ZIP Archive
-        run: zip -r firelink.zip background.js content.js icons manifest.json popup
+        run: zip -r firelink.zip background.js content.js icons manifest.json popup protocol.js
 
       - name: Resolve version
         id: version

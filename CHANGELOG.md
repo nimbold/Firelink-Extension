@@ -2,6 +2,32 @@
 
 All notable changes to Firelink Companion will be documented in this file.
 
+## [2.0.0] - 2026-07-04
+
+### Breaking
+- Require the Firelink 1.0 desktop app and its local protocol v3 for automatic download capture.
+- Older desktop builds are rejected before the extension can cancel an automatic browser download.
+
+### New
+- Add stronger desktop-server identity checks before trusting localhost responses.
+- Add dynamic port discovery across Firelink's `127.0.0.1:6412-6422` listener range.
+- Add safer explicit launch behavior through `firelink://launch` when the app is closed.
+- Add clearer offline, invalid-token, and update-required behavior for browser handoff failures.
+
+### Improved
+- Route automatic captures through Firelink's Add window while preserving the browser download unless Firelink confirms acceptance.
+- Keep manual context-menu downloads free of browser cookies by default.
+- Forward browser cookies only for automatic single-download captures that need the browser session.
+- Avoid sharing one site's cookies across multi-link batches.
+- Keep the extension package self-contained for Mozilla review by removing remote font loading.
+- Update Firefox compatibility metadata and data-collection declarations for the current add-on store requirements.
+
+### Fixed
+- Fix event-page startup races so capture settings are respected after the background worker wakes up.
+- Fix unsupported Firefox notification-button usage that could prevent capture listeners from registering.
+- Fix protocol fallback paths that could open unnecessary tabs or lose the original browser download.
+- Fix host permissions and local API port metadata so the extension matches the Firelink 1.0 desktop listener.
+
 ## [1.0.15] - 2026-06-24
 
 ### Compliance
@@ -17,9 +43,9 @@ All notable changes to Firelink Companion will be documented in this file.
 ### Fixes
 - Remove the unsupported Firefox notification-button API that prevented background capture listeners from registering.
 - Verify the Firelink server identity before treating localhost responses as authoritative or sending download URLs.
-- Use the registered `firelink://` protocol directly when an explicit “Download with Firelink” action finds the app offline.
-- Stop intercepting normal page clicks so offline fallback preserves the browser and website’s original download behavior.
-- Never attach one site’s cookies to a multi-URL handoff.
+- Use the registered `firelink://` protocol directly when an explicit "Download with Firelink" action finds the app offline.
+- Stop intercepting normal page clicks so offline fallback preserves the browser and website's original download behavior.
+- Never attach one site's cookies to a multi-URL handoff.
 - Restore the automatic-capture `silent` payload contract and resume browser downloads without offline notification spam.
 - Refresh the packaged extension so its host permissions and API port range match the desktop app's `127.0.0.1:6412-6422` listener.
 - Never open a protocol tab after a successful direct handoff.

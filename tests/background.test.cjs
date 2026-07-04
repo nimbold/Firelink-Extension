@@ -172,9 +172,9 @@ test("offline manual handoff launches then delivers original payload", async () 
     referer: "https://example.com/page",
     silent: false,
     filename: "file.zip",
-    headers: "User-Agent: Firefox Test",
-    cookies: "session=private"
+    headers: "User-Agent: Firefox Test"
   });
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.cookieQueries)), []);
   assert.equal(fixture.createdNotifications.length, 0);
 });
 
@@ -418,7 +418,7 @@ test("never shares first-party cookies across a multi-host batch", async () => {
   assert.equal(payload.cookies, undefined);
 });
 
-test("passes single-download cookies through the dedicated cookie field", async () => {
+test("does not attach browser cookies to manual single-link handoffs", async () => {
   let payload = null;
   const fixture = createBackgroundContext(
     async (_path, _token, request) => {
@@ -437,6 +437,33 @@ test("passes single-download cookies through the dedicated cookie field", async 
 
   await vm.runInContext(
     'sendToFirelink(["https://one.example/a.zip"], "", { cookieStoreId: "firefox-container-2" })',
+    fixture.context
+  );
+
+  assert.equal(payload.cookies, undefined);
+  assert.doesNotMatch(payload.headers, /Cookie:/);
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.cookieQueries)), []);
+});
+
+test("passes automatic-capture cookies through the dedicated cookie field", async () => {
+  let payload = null;
+  const fixture = createBackgroundContext(
+    async (_path, _token, request) => {
+      payload = request.payload;
+      return { ok: true };
+    },
+    {
+      cookiesByUrl: {
+        "https://one.example/a.zip": [
+          { name: "session", value: "private" },
+          { name: "locale", value: "en" }
+        ]
+      }
+    }
+  );
+
+  await vm.runInContext(
+    'sendToFirelink(["https://one.example/a.zip"], "", { captureMode: "automatic", cookieStoreId: "firefox-container-2" })',
     fixture.context
   );
 
