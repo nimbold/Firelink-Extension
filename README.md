@@ -38,7 +38,6 @@ The extension focuses on a narrow job: capture the right browser event, authenti
 | Firelink desktop app | `1.0.0` or newer |
 | Firelink local protocol | v3 for automatic captures |
 | Firefox desktop | 140 or newer |
-| Firefox for Android | 142 or newer |
 
 > [!IMPORTANT]
 > Version 2.0.0 is a breaking extension release. Automatic capture requires the Firelink 1.0 local protocol. Update the desktop app and the extension together.
