@@ -20,8 +20,14 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Create ZIP Archive
-        run: zip -r firelink.zip background.js content.js icons manifest.json popup protocol.js
+      - name: Verify extension packages
+        run: npm run check
+
+      - name: Create ZIP Archives
+        run: |
+          (cd dist/firefox && zip -r ../../firelink-firefox.zip .)
+          cp firelink-firefox.zip firelink.zip
+          (cd dist/chromium && zip -r ../../firelink-chromium.zip .)
 
       - name: Resolve version
         id: version
@@ -51,8 +57,8 @@ jobs:
           TAG_NAME: ${{ steps.version.outputs.tag_name }}
         run: |
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
-            gh release upload "$TAG_NAME" firelink.zip --clobber
+            gh release upload "$TAG_NAME" firelink.zip firelink-firefox.zip firelink-chromium.zip --clobber
             gh release edit "$TAG_NAME" --notes-file release_notes.md
           else
-            gh release create "$TAG_NAME" firelink.zip --title "$TAG_NAME" --notes-file release_notes.md --verify-tag
+            gh release create "$TAG_NAME" firelink.zip firelink-firefox.zip firelink-chromium.zip --title "$TAG_NAME" --notes-file release_notes.md --verify-tag
           fi

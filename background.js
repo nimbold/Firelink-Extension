@@ -291,8 +291,8 @@ async function runLaunchSession(session) {
       notify(
         "Firelink Was Not Opened",
         cooldownUntil
-          ? "Firefox could not open Firelink. Check protocol permission, open Firelink once, then retry."
-          : "Approve Firefox’s prompt to open Firelink. No download was added."
+          ? "Your browser could not open Firelink. Check protocol permission, open Firelink once, then retry."
+          : "Approve your browser's prompt to open Firelink. No download was added."
       );
     } else {
       storeLaunchState(0, 0);
@@ -403,7 +403,7 @@ async function sendToFirelink(urls, referer = "", options = {}) {
         if (notifyOnFailure) {
           notify(
             "Firelink Launch Needs Attention",
-            "Open Firelink manually and confirm Firefox is allowed to open firelink links, then retry."
+            "Open Firelink manually and confirm your browser is allowed to open firelink links, then retry."
           );
         }
         return false;
