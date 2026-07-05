@@ -2,7 +2,7 @@
 
 All notable changes to Firelink Companion will be documented in this file.
 
-## [Unreleased]
+## [2.0.1] - 2026-07-06
 
 ### New
 - Add a Chromium load-unpacked package for Chrome, Edge, Brave, Vivaldi, Opera, and other Manifest V3 Chromium browsers.
@@ -12,7 +12,7 @@ All notable changes to Firelink Companion will be documented in this file.
 ### Improved
 - Publish separate Firefox and Chromium release ZIP artifacts.
 - Keep the existing `firelink.zip` release asset as a Firefox-package compatibility alias.
-- Document manual Chromium installation limits while the extension is not yet available from a browser store.
+- Clean up the README installation flow and document manual Chromium installation limits while the extension is not yet available from a browser store.
 - Use browser-neutral Firelink launch notification copy for cross-browser installs.
 
 ## [2.0.0] - 2026-07-04
