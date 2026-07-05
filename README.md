@@ -21,7 +21,7 @@ The extension focuses on a narrow job: capture the right browser event, authenti
 
 ## Highlights
 
-- **Automatic download capture** for normal browser downloads.
+- **Automatic download capture** for ordinary browser downloads.
 - **Context-menu actions** for single links and selected text containing links.
 - **Firefox Manifest V3 support** with no remote code or remote fonts.
 - **Signed localhost requests** using HMAC-SHA256 and the pairing token from Firelink.
