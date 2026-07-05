@@ -22,7 +22,7 @@ The extension signs every localhost handoff with the pairing token from Firelink
 
 | Browser | How to install |
 | --- | --- |
-| Firefox 140+ | [Install from Mozilla Add-ons](https://addons.mozilla.org/en-US/firefox/addon/firelink-companion/) |
+| Firefox 140+ | <a href="https://addons.mozilla.org/en-US/firefox/addon/firelink-companion/"><img src="https://img.shields.io/badge/Install%20from-Firefox%20Add--ons-FF7139?style=for-the-badge&logo=firefox-browser&logoColor=white" alt="Install Firelink Companion from Firefox Add-ons" /></a> |
 | Chrome, Edge, Brave, Vivaldi, Opera, Chromium | Download `firelink-chromium.zip` from [GitHub Releases](https://github.com/nimbold/Firelink-Extension/releases), then follow [Manual Chromium Installation](#manual-chromium-installation). |
 
 After installing:
