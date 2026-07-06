@@ -5,12 +5,11 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <div class="background-blob"></div>
   <div class="container">
     <div class="header">
       <img src="../icons/icon-48.png" alt="" class="logo" id="header-logo">
       <div class="header-title-container">
-        <h2>Firelink Companion</h2>
+        <h2>Firelink</h2>
         <div class="status-indicator" id="connection-status">
           <span class="status-dot"></span>
           <span class="status-text">Checking connection...</span>
@@ -37,10 +36,21 @@
     </div>
   
   <div class="settings">
-    <div class="setting-row">
+    <button class="media-action" id="fetch-media-btn" type="button">
+      <span class="media-action-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24">
+          <path d="M8 5v14l11-7z"></path>
+        </svg>
+      </span>
+      <span class="media-action-copy">
+        <span class="setting-title">Fetch media</span>
+        <span class="setting-desc" id="media-status">Current tab</span>
+      </span>
+    </button>
+
+    <div class="setting-row compact-row">
       <div class="setting-info">
-        <span class="setting-title">Capture All Downloads</span>
-        <span class="setting-desc">Intercept browser downloads</span>
+        <span class="setting-title">Capture downloads</span>
       </div>
       <label class="switch">
         <input type="checkbox" id="global-toggle">
@@ -48,7 +58,7 @@
       </label>
     </div>
 
-    <div class="setting-row" id="site-setting-row">
+    <div class="setting-row compact-row" id="site-setting-row">
       <div class="setting-info">
         <span class="setting-title">Disable on site</span>
         <span class="setting-desc" id="current-hostname">...</span>
@@ -62,8 +72,8 @@
     <div class="setting-row pairing-row" id="pairing-section">
       <div class="pairing-header">
         <div>
-          <span class="setting-title">App Pairing Token</span>
-          <span class="setting-desc" id="pairing-desc">Paste the token from Firelink App</span>
+          <span class="setting-title">Pairing token</span>
+          <span class="setting-desc" id="pairing-desc">Required for local handoff</span>
         </div>
         <button class="pairing-toggle-btn" id="pairing-toggle-btn" aria-label="Show or hide pairing token field">▲</button>
       </div>
@@ -73,9 +83,6 @@
         <button id="save-token-btn">Save</button>
       </div>
     </div>
-    <p class="protocol-guidance">
-      First offline launch: Firefox asks permission to open Firelink. Enable “Always allow this extension to open firelink links” for later automatic launches. Firelink cannot bypass this Firefox prompt.
-    </p>
   </div>
 
   </div>

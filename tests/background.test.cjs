@@ -16,6 +16,7 @@ function createBackgroundContext(signedFetch, options = {}) {
   const downloadActions = [];
   const removedTabs = [];
   const storageWrites = [];
+  const contextMenuItems = [];
   const listeners = {};
   const noopEvent = { addListener() {} };
   const chrome = {
@@ -23,7 +24,7 @@ function createBackgroundContext(signedFetch, options = {}) {
       onClicked: {
         addListener(listener) { listeners.contextMenu = listener; }
       },
-      create() {},
+      create(item) { contextMenuItems.push(item); },
       removeAll(callback) { callback(); }
     },
     cookies: {
@@ -58,7 +59,10 @@ function createBackgroundContext(signedFetch, options = {}) {
     },
     runtime: {
       lastError: null,
-      onInstalled: noopEvent
+      onInstalled: noopEvent,
+      onMessage: {
+        addListener(listener) { listeners.message = listener; }
+      }
     },
     scripting: {
       executeScript() {}
@@ -78,6 +82,9 @@ function createBackgroundContext(signedFetch, options = {}) {
       onChanged: noopEvent
     },
     tabs: {
+      query(_queryInfo, callback) {
+        callback(options.activeTabs || []);
+      },
       create(details, callback) {
         createdTabs.push(details);
         const complete = () => {
@@ -119,6 +126,7 @@ function createBackgroundContext(signedFetch, options = {}) {
     storageWrites,
     cookieQueries,
     downloadActions,
+    contextMenuItems,
     listeners
   };
 }
@@ -473,4 +481,70 @@ test("passes automatic-capture cookies through the dedicated cookie field", asyn
     url: "https://one.example/a.zip",
     storeId: "firefox-container-2"
   }]);
+});
+
+test("popup media fetch sends active page with container cookies", async () => {
+  let payload = null;
+  const fixture = createBackgroundContext(
+    async (_path, _token, request) => {
+      payload = request.payload;
+      return { ok: true };
+    },
+    {
+      activeTabs: [{
+        url: "https://youtube.com/watch?v=abc",
+        cookieStoreId: "firefox-container-2"
+      }],
+      cookiesByUrl: {
+        "https://youtube.com/watch?v=abc": [
+          { name: "session", value: "private" }
+        ]
+      }
+    }
+  );
+
+  const response = await new Promise(resolve => {
+    const keepAlive = fixture.listeners.message(
+      { action: "fetchMediaForActiveTab" },
+      {},
+      resolve
+    );
+    assert.equal(keepAlive, true);
+  });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(response)), { ok: true });
+  assert.deepEqual(JSON.parse(JSON.stringify(payload)), {
+    urls: ["https://youtube.com/watch?v=abc"],
+    referer: "https://youtube.com/watch?v=abc",
+    silent: false,
+    headers: "User-Agent: Firefox Test",
+    cookies: "session=private"
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.cookieQueries)), [{
+    url: "https://youtube.com/watch?v=abc",
+    storeId: "firefox-container-2"
+  }]);
+});
+
+test("media context menu sends the tab page instead of transient media src", async () => {
+  let payload = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  });
+
+  fixture.listeners.contextMenu(
+    {
+      menuItemId: "fetch-media-with-firelink",
+      srcUrl: "blob:https://youtube.com/transient"
+    },
+    {
+      url: "https://youtube.com/watch?v=abc",
+      cookieStoreId: "firefox-default"
+    }
+  );
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(payload.urls[0], "https://youtube.com/watch?v=abc");
+  assert.equal(payload.referer, "https://youtube.com/watch?v=abc");
 });

@@ -2,6 +2,15 @@
 
 All notable changes to Firelink Companion will be documented in this file.
 
+## Unreleased
+
+### New
+- Add Fetch media actions in the popup and page/video/audio context menus.
+
+### Improved
+- Compact the popup layout so pairing, capture, per-site controls, and media fetch fit without long guidance text.
+- Forward container-aware cookies only for explicit single-page media fetches and automatic single-download captures.
+
 ## [2.0.1] - 2026-07-06
 
 ### New

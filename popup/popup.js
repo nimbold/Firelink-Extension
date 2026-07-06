@@ -12,6 +12,29 @@ document.addEventListener('DOMContentLoaded', () => {
   const pairingContent = document.getElementById('pairing-content');
   const pairingToggleBtn = document.getElementById('pairing-toggle-btn');
   const pairingDesc = document.getElementById('pairing-desc');
+  const fetchMediaBtn = document.getElementById('fetch-media-btn');
+  const mediaStatus = document.getElementById('media-status');
+  let activeTab = null;
+
+  const isMediaFetchableTab = (tab) => {
+    try {
+      const url = new URL(tab?.url || '');
+      return url.protocol === 'http:' || url.protocol === 'https:';
+    } catch (error) {
+      return false;
+    }
+  };
+
+  const setMediaStatusForTab = (tab) => {
+    if (!isMediaFetchableTab(tab)) {
+      mediaStatus.textContent = 'Open a web page first';
+      fetchMediaBtn.disabled = true;
+      return;
+    }
+
+    mediaStatus.textContent = new URL(tab.url).hostname;
+    fetchMediaBtn.disabled = false;
+  };
 
   // Check connection to Firelink
   async function checkConnection() {
@@ -90,9 +113,10 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     applyTheme(currentTheme);
 
-    // Get current active tab
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       if (tabs.length > 0 && tabs[0].url) {
+        activeTab = tabs[0];
+        setMediaStatusForTab(activeTab);
         try {
           const url = new URL(tabs[0].url);
           // Only show site toggle for valid http/https URLs
@@ -109,6 +133,9 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (e) {
           document.getElementById('site-setting-row').style.display = 'none';
         }
+      }
+      if (!activeTab) {
+        setMediaStatusForTab(null);
       }
     });
 
@@ -148,6 +175,28 @@ document.addEventListener('DOMContentLoaded', () => {
     const newTheme = currentTheme === 'light' ? 'dark' : 'light';
     applyTheme(newTheme);
     chrome.storage.local.set({ theme: newTheme });
+  });
+
+  fetchMediaBtn.addEventListener('click', () => {
+    if (!isMediaFetchableTab(activeTab)) {
+      setMediaStatusForTab(activeTab);
+      return;
+    }
+
+    fetchMediaBtn.disabled = true;
+    mediaStatus.textContent = 'Sending to Firelink...';
+    chrome.runtime.sendMessage({ action: 'fetchMediaForActiveTab' }, response => {
+      if (chrome.runtime.lastError || !response?.ok) {
+        mediaStatus.textContent = 'Could not send media page';
+        fetchMediaBtn.disabled = false;
+        return;
+      }
+
+      mediaStatus.textContent = 'Opened in Firelink';
+      setTimeout(() => {
+        setMediaStatusForTab(activeTab);
+      }, 1600);
+    });
   });
 
   // Handle site toggle change

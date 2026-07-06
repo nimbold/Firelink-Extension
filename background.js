@@ -1,4 +1,5 @@
 const ALLOWED_SCHEMES = new Set(["http:", "https:", "ftp:", "sftp:"]);
+const PAGE_MEDIA_SCHEMES = new Set(["http:", "https:"]);
 
 const defaultSettings = {
   globalCapture: true,
@@ -88,6 +89,11 @@ chrome.runtime.onInstalled.addListener(() => {
       title: "Download selected with Firelink",
       contexts: ["selection"]
     });
+    chrome.contextMenus.create({
+      id: "fetch-media-with-firelink",
+      title: "Fetch media with Firelink",
+      contexts: ["page", "video", "audio"]
+    });
   });
 });
 
@@ -128,6 +134,19 @@ function extractURLsFromText(text) {
 function normalizeURLList(urls) {
   const rawURLs = Array.isArray(urls) ? urls : [urls];
   return [...new Set(rawURLs.map(normalizeURL).filter(Boolean))];
+}
+
+function normalizePageMediaURL(rawURL) {
+  if (typeof rawURL !== "string") {
+    return null;
+  }
+
+  try {
+    const url = new URL(rawURL.trim());
+    return PAGE_MEDIA_SCHEMES.has(url.protocol) ? url.href : null;
+  } catch (error) {
+    return null;
+  }
 }
 
 function captureEnabledForURL(rawURL) {
@@ -338,7 +357,8 @@ async function sendToFirelink(urls, referer = "", options = {}) {
     return false;
   }
 
-  const shouldForwardCookies = captureMode === "automatic" && normalizedURLs.length === 1;
+  const shouldForwardCookies = normalizedURLs.length === 1
+    && (captureMode === "automatic" || options.forwardCookies === true);
   const cookieString = shouldForwardCookies
     ? await collectCookieHeader(normalizedURLs[0], options.cookieStoreId)
     : "";
@@ -423,6 +443,43 @@ async function sendToFirelink(urls, referer = "", options = {}) {
   }
 }
 
+async function fetchMediaForTab(tab, options = {}) {
+  const pageURL = normalizePageMediaURL(tab?.url) || normalizePageMediaURL(options.srcUrl);
+  if (!pageURL) {
+    if (options.notifyOnFailure !== false) {
+      notify("Firelink Media Fetch", "Open a normal web page, then try Fetch media again.");
+    }
+    return false;
+  }
+
+  const accepted = await sendToFirelink([pageURL], pageURL, {
+    allowProtocolFallback: true,
+    cookieStoreId: tab?.cookieStoreId,
+    forwardCookies: true,
+    notifyOnFailure: options.notifyOnFailure !== false
+  });
+
+  if (accepted && options.notifyOnSuccess === true) {
+    notify("Firelink Media Fetch", "Media page sent to Firelink.");
+  }
+
+  return accepted;
+}
+
+chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
+  if (request?.action !== "fetchMediaForActiveTab") {
+    return false;
+  }
+
+  chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
+    const tab = tabs?.[0] || null;
+    fetchMediaForTab(tab, { notifyOnSuccess: false })
+      .then(ok => sendResponse({ ok }))
+      .catch(() => sendResponse({ ok: false }));
+  });
+  return true;
+});
+
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId === "download-with-firelink") {
     if (info.linkUrl) {
@@ -430,6 +487,14 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
         cookieStoreId: tab?.cookieStoreId
       });
     }
+    return;
+  }
+
+  if (info.menuItemId === "fetch-media-with-firelink") {
+    fetchMediaForTab(tab, {
+      srcUrl: info.srcUrl,
+      notifyOnSuccess: true
+    });
     return;
   }
 

@@ -36,12 +36,13 @@ After installing:
 ## Features
 
 - Automatic download capture for ordinary browser downloads.
+- Media fetch from the extension popup or page context menu.
 - Context-menu actions for single links and selected text containing links.
 - Firefox and Chromium Manifest V3 support.
 - Signed HMAC-SHA256 requests to Firelink's local server.
 - Desktop identity checks before trusting localhost responses.
 - Safe fallback behavior that resumes browser downloads when Firelink is closed or rejects a handoff.
-- Cookie handoff only for automatic single-download captures that need the browser session.
+- Cookie handoff only for explicit single-page media fetches and automatic single-download captures that need the browser session.
 - Dynamic local port discovery across `127.0.0.1:6412-6422`.
 
 ## Requirements
@@ -123,7 +124,7 @@ firelink-chromium.zip
 
 Firelink Companion handles URLs, referrers, selected link text, filenames, request headers, and cookies only to deliver the chosen browser download to the local Firelink app. It does not send that data to a remote service.
 
-Cookie forwarding is intentionally narrow and limited to automatic single-download captures where the desktop app needs the browser session to fetch the same file.
+Cookie forwarding is intentionally narrow and limited to explicit single-page media fetches and automatic single-download captures where the desktop app needs the browser session.
 
 ## License
 
