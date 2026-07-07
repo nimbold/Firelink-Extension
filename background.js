@@ -11,6 +11,7 @@ const defaultSettings = {
 
 let cachedSettings = { ...defaultSettings };
 const LAUNCH_URL = "firelink://launch";
+const MEDIA_FETCH_PROTOCOL_VERSION = 4;
 const LAUNCH_TIMEOUT_MS = 15000;
 const LAUNCH_RETRY_MS = 500;
 const LAUNCH_TIMEOUTS_BEFORE_COOLDOWN = 2;
@@ -174,7 +175,7 @@ function notify(title, message) {
 
 function createLaunchTab() {
   return new Promise(resolve => {
-    chrome.tabs.create({ url: LAUNCH_URL, active: false }, tab => {
+    chrome.tabs.create({ url: LAUNCH_URL, active: true }, tab => {
       if (chrome.runtime.lastError) {
         resolve(null);
         return;
@@ -369,10 +370,13 @@ async function sendToFirelink(urls, referer = "", options = {}) {
     silent: captureMode === "automatic",
     filename: options.filename,
     headers: `User-Agent: ${navigator.userAgent}`,
-    cookies: cookieString || undefined
+    cookies: cookieString || undefined,
+    media: options.media === true
   };
 
-  const requiredProtocolVersion = captureMode === "automatic" ? 3 : undefined;
+  const requiredProtocolVersion = options.media === true
+    ? MEDIA_FETCH_PROTOCOL_VERSION
+    : captureMode === "automatic" ? 3 : undefined;
 
   try {
     await FirelinkProtocol.signedFetch("/download", cachedSettings.extensionToken, {
@@ -456,6 +460,7 @@ async function fetchMediaForTab(tab, options = {}) {
     allowProtocolFallback: true,
     cookieStoreId: tab?.cookieStoreId,
     forwardCookies: true,
+    media: true,
     notifyOnFailure: options.notifyOnFailure !== false
   });
 

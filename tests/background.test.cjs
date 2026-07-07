@@ -172,6 +172,7 @@ test("offline manual handoff launches then delivers original payload", async () 
   assert.equal(accepted, true);
   assert.equal(fixture.createdTabs.length, 1);
   assert.equal(fixture.createdTabs[0].url, "firelink://launch");
+  assert.equal(fixture.createdTabs[0].active, true);
   assert.deepEqual(fixture.removedTabs, [1]);
   assert.equal(calls[1].path, "/ping");
   assert.equal(calls[2].path, "/download");
@@ -180,7 +181,8 @@ test("offline manual handoff launches then delivers original payload", async () 
     referer: "https://example.com/page",
     silent: false,
     filename: "file.zip",
-    headers: "User-Agent: Firefox Test"
+    headers: "User-Agent: Firefox Test",
+    media: false
   });
   assert.deepEqual(JSON.parse(JSON.stringify(fixture.cookieQueries)), []);
   assert.equal(fixture.createdNotifications.length, 0);
@@ -229,6 +231,7 @@ test("creating launch tab is not success when authenticated discovery times out"
 
   assert.equal(accepted, false);
   assert.equal(fixture.createdTabs[0].url, "firelink://launch");
+  assert.equal(fixture.createdTabs[0].active, true);
   assert.deepEqual(fixture.removedTabs, [1]);
   assert.equal(fixture.createdNotifications.at(-1)[0].title, "Firelink Was Not Opened");
 });
@@ -331,6 +334,7 @@ test("concurrent manual actions share one launch and deliver each payload once",
 
   assert.deepEqual(Array.from(accepted), [true, true]);
   assert.equal(fixture.createdTabs.length, 1);
+  assert.equal(fixture.createdTabs[0].active, true);
   assert.deepEqual(delivered.sort(), [
     "https://example.com/one.zip",
     "https://example.com/two.zip"
@@ -369,8 +373,10 @@ test("automatic capture launches Firelink when the desktop app is closed", async
     ["erase", { id: 42 }]
   ]);
   assert.equal(fixture.createdTabs.length, 1);
+  assert.equal(fixture.createdTabs[0].active, true);
   assert.deepEqual(fixture.removedTabs, [1]);
   assert.equal(deliveredPayload.silent, true);
+  assert.equal(deliveredPayload.media, false);
   assert.equal(deliveredProtocolVersion, 3);
   assert.equal(fixture.createdNotifications.length, 1);
 });
@@ -392,6 +398,7 @@ test("automatic capture marks the payload silent but still confirms success", as
   });
 
   assert.equal(payload.silent, true);
+  assert.equal(payload.media, false);
   assert.equal(requiredProtocolVersion, 3);
   assert.deepEqual(JSON.parse(JSON.stringify(fixture.downloadActions)), [
     ["pause", 7],
@@ -485,9 +492,11 @@ test("passes automatic-capture cookies through the dedicated cookie field", asyn
 
 test("popup media fetch sends active page with container cookies", async () => {
   let payload = null;
+  let requiredProtocolVersion = null;
   const fixture = createBackgroundContext(
     async (_path, _token, request) => {
       payload = request.payload;
+      requiredProtocolVersion = request.requiredProtocolVersion;
       return { ok: true };
     },
     {
@@ -518,8 +527,10 @@ test("popup media fetch sends active page with container cookies", async () => {
     referer: "https://youtube.com/watch?v=abc",
     silent: false,
     headers: "User-Agent: Firefox Test",
-    cookies: "session=private"
+    cookies: "session=private",
+    media: true
   });
+  assert.equal(requiredProtocolVersion, 4);
   assert.deepEqual(JSON.parse(JSON.stringify(fixture.cookieQueries)), [{
     url: "https://youtube.com/watch?v=abc",
     storeId: "firefox-container-2"
@@ -528,8 +539,10 @@ test("popup media fetch sends active page with container cookies", async () => {
 
 test("media context menu sends the tab page instead of transient media src", async () => {
   let payload = null;
+  let requiredProtocolVersion = null;
   const fixture = createBackgroundContext(async (_path, _token, request) => {
     payload = request.payload;
+    requiredProtocolVersion = request.requiredProtocolVersion;
     return { ok: true };
   });
 
@@ -547,4 +560,6 @@ test("media context menu sends the tab page instead of transient media src", asy
 
   assert.equal(payload.urls[0], "https://youtube.com/watch?v=abc");
   assert.equal(payload.referer, "https://youtube.com/watch?v=abc");
+  assert.equal(payload.media, true);
+  assert.equal(requiredProtocolVersion, 4);
 });

@@ -9,6 +9,7 @@ All notable changes to Firelink Companion will be documented in this file.
 
 ### Improved
 - Compact the popup layout so pairing, capture, per-site controls, and media fetch fit without long guidance text.
+- Require Firelink local protocol v4 for explicit Fetch media handoffs so older desktop builds do not silently treat them as normal downloads.
 - Forward container-aware cookies only for explicit single-page media fetches and automatic single-download captures.
 
 ## [2.0.1] - 2026-07-06

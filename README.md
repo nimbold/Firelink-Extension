@@ -50,7 +50,7 @@ After installing:
 | Component | Requirement |
 | --- | --- |
 | Firelink desktop app | `1.0.0` or newer |
-| Firelink local protocol | v3 for automatic captures |
+| Firelink local protocol | v3 for automatic captures; v4 for explicit Fetch media intent |
 | Firefox desktop | 140 or newer |
 | Chromium browsers | Current desktop builds with Manifest V3 extension service workers |
 
