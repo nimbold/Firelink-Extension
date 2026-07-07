@@ -526,7 +526,6 @@ test("popup media fetch sends active page with container cookies", async () => {
     urls: ["https://youtube.com/watch?v=abc"],
     referer: "https://youtube.com/watch?v=abc",
     silent: false,
-    headers: "User-Agent: Firefox Test",
     cookies: "session=private",
     media: true
   });

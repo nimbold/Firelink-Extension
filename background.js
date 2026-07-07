@@ -369,7 +369,7 @@ async function sendToFirelink(urls, referer = "", options = {}) {
     referer,
     silent: captureMode === "automatic",
     filename: options.filename,
-    headers: `User-Agent: ${navigator.userAgent}`,
+    headers: options.includeUserAgent === false ? undefined : `User-Agent: ${navigator.userAgent}`,
     cookies: cookieString || undefined,
     media: options.media === true
   };
@@ -460,6 +460,7 @@ async function fetchMediaForTab(tab, options = {}) {
     allowProtocolFallback: true,
     cookieStoreId: tab?.cookieStoreId,
     forwardCookies: true,
+    includeUserAgent: false,
     media: true,
     notifyOnFailure: options.notifyOnFailure !== false
   });
