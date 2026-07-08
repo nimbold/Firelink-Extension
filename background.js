@@ -472,6 +472,17 @@ async function fetchMediaForTab(tab, options = {}) {
   return accepted;
 }
 
+function sendSelectionTextLinks(info, tab) {
+  const urls = extractURLsFromText(info.selectionText);
+  if (urls.length === 0) {
+    return false;
+  }
+  sendToFirelink(urls, tab?.url || "", {
+    cookieStoreId: tab?.cookieStoreId
+  });
+  return true;
+}
+
 chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
   if (request?.action !== "fetchMediaForActiveTab") {
     return false;
@@ -508,6 +519,11 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
     return;
   }
 
+  if (!tab?.id || !chrome.scripting?.executeScript || !chrome.tabs?.sendMessage) {
+    sendSelectionTextLinks(info, tab);
+    return;
+  }
+
   chrome.scripting.executeScript(
     {
       target: { tabId: tab.id },
@@ -515,12 +531,7 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
     },
     () => {
       if (chrome.runtime.lastError) {
-        const urls = extractURLsFromText(info.selectionText);
-        if (urls.length > 0) {
-          sendToFirelink(urls, tab.url, {
-            cookieStoreId: tab.cookieStoreId
-          });
-        }
+        sendSelectionTextLinks(info, tab);
         return;
       }
 
@@ -529,28 +540,18 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
         { action: "extractSelectionLinks" },
         response => {
           if (chrome.runtime.lastError) {
-            const urls = extractURLsFromText(info.selectionText);
-            if (urls.length > 0) {
-              sendToFirelink(urls, tab.url, {
-                cookieStoreId: tab.cookieStoreId
-              });
-            }
+            sendSelectionTextLinks(info, tab);
             return;
           }
 
           if (response?.links?.length > 0) {
-            sendToFirelink(response.links, tab.url, {
-              cookieStoreId: tab.cookieStoreId
+            sendToFirelink(response.links, tab?.url || "", {
+              cookieStoreId: tab?.cookieStoreId
             });
             return;
           }
 
-          const urls = extractURLsFromText(info.selectionText);
-          if (urls.length > 0) {
-            sendToFirelink(urls, tab.url, {
-              cookieStoreId: tab.cookieStoreId
-            });
-          }
+          sendSelectionTextLinks(info, tab);
         }
       );
     }

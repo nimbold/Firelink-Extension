@@ -12,6 +12,9 @@ All notable changes to Firelink Companion will be documented in this file.
 - Require Firelink local protocol v4 for explicit Fetch media handoffs so older desktop builds do not silently treat them as normal downloads.
 - Forward container-aware cookies only for explicit single-page media fetches and automatic single-download captures.
 
+### Fixed
+- Fall back to selected-text URL parsing when the browser cannot expose a tab for the selected-link context menu.
+
 ## [2.0.1] - 2026-07-06
 
 ### New

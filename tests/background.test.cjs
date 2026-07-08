@@ -17,6 +17,8 @@ function createBackgroundContext(signedFetch, options = {}) {
   const removedTabs = [];
   const storageWrites = [];
   const contextMenuItems = [];
+  const executedScripts = [];
+  const sentMessages = [];
   const listeners = {};
   const noopEvent = { addListener() {} };
   const chrome = {
@@ -65,7 +67,14 @@ function createBackgroundContext(signedFetch, options = {}) {
       }
     },
     scripting: {
-      executeScript() {}
+      executeScript(details, callback) {
+        executedScripts.push(details);
+        chrome.runtime.lastError = options.scriptInjectionError
+          ? { message: options.scriptInjectionError }
+          : null;
+        callback?.();
+        chrome.runtime.lastError = null;
+      }
     },
     storage: {
       local: {
@@ -104,7 +113,14 @@ function createBackgroundContext(signedFetch, options = {}) {
         removedTabs.push(id);
         callback?.();
       },
-      sendMessage() {}
+      sendMessage(tabId, message, callback) {
+        sentMessages.push({ tabId, message });
+        chrome.runtime.lastError = options.sendMessageError
+          ? { message: options.sendMessageError }
+          : null;
+        callback?.(options.selectionResponse || { links: [] });
+        chrome.runtime.lastError = null;
+      }
     }
   };
   const context = vm.createContext({
@@ -127,6 +143,8 @@ function createBackgroundContext(signedFetch, options = {}) {
     cookieQueries,
     downloadActions,
     contextMenuItems,
+    executedScripts,
+    sentMessages,
     listeners
   };
 }
@@ -488,6 +506,107 @@ test("passes automatic-capture cookies through the dedicated cookie field", asyn
     url: "https://one.example/a.zip",
     storeId: "firefox-container-2"
   }]);
+});
+
+test("link context menu sends the clicked link with page referer", async () => {
+  let payload = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  });
+
+  fixture.listeners.contextMenu(
+    {
+      menuItemId: "download-with-firelink",
+      linkUrl: "https://cdn.example/file.zip"
+    },
+    {
+      url: "https://example.com/page",
+      cookieStoreId: "firefox-container-2"
+    }
+  );
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.deepEqual(JSON.parse(JSON.stringify(payload)), {
+    urls: ["https://cdn.example/file.zip"],
+    referer: "https://example.com/page",
+    silent: false,
+    headers: "User-Agent: Firefox Test",
+    media: false
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.cookieQueries)), []);
+});
+
+test("selected-link context menu prefers extracted anchor links", async () => {
+  let payload = null;
+  const fixture = createBackgroundContext(
+    async (_path, _token, request) => {
+      payload = request.payload;
+      return { ok: true };
+    },
+    {
+      selectionResponse: {
+        links: ["https://example.com/one.zip", "https://example.com/two.zip"]
+      }
+    }
+  );
+
+  fixture.listeners.contextMenu(
+    {
+      menuItemId: "download-selected-with-firelink",
+      selectionText: "https://fallback.example/ignored.zip"
+    },
+    {
+      id: 12,
+      url: "https://example.com/page",
+      cookieStoreId: "firefox-container-2"
+    }
+  );
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.executedScripts[0])), {
+    target: { tabId: 12 },
+    files: ["content.js"]
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.sentMessages[0])), {
+    tabId: 12,
+    message: { action: "extractSelectionLinks" }
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(payload)), {
+    urls: ["https://example.com/one.zip", "https://example.com/two.zip"],
+    referer: "https://example.com/page",
+    silent: false,
+    headers: "User-Agent: Firefox Test",
+    media: false
+  });
+});
+
+test("selected-link context menu falls back to selected text when tab is unavailable", async () => {
+  let payload = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  });
+
+  assert.doesNotThrow(() => {
+    fixture.listeners.contextMenu(
+      {
+        menuItemId: "download-selected-with-firelink",
+        selectionText: "(https://example.com/file.zip),"
+      },
+      undefined
+    );
+  });
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(fixture.executedScripts.length, 0);
+  assert.deepEqual(JSON.parse(JSON.stringify(payload)), {
+    urls: ["https://example.com/file.zip"],
+    referer: "",
+    silent: false,
+    headers: "User-Agent: Firefox Test",
+    media: false
+  });
 });
 
 test("popup media fetch sends active page with container cookies", async () => {
