@@ -5,7 +5,7 @@
 
   **The browser bridge for Firelink's desktop download manager.**
 
-  [![Version](https://img.shields.io/badge/version-2.0.1-6f42c1?style=flat-square)](https://github.com/nimbold/Firelink-Extension/releases)
+  [![Version](https://img.shields.io/badge/version-2.0.2-6f42c1?style=flat-square)](https://github.com/nimbold/Firelink-Extension/releases)
   [![Firefox](https://img.shields.io/badge/Firefox-140%2B-FF7139?style=flat-square&logo=firefox-browser&logoColor=white)](https://addons.mozilla.org/en-US/firefox/addon/firelink-companion/)
   [![Chromium](https://img.shields.io/badge/Chromium-Manual%20Install-4285F4?style=flat-square&logo=googlechrome&logoColor=white)](#manual-chromium-installation)
   [![Manifest V3](https://img.shields.io/badge/Manifest-V3-4285F4?style=flat-square)](manifest.json)
@@ -14,7 +14,7 @@
 
 ## What It Does
 
-Firelink Companion sends browser downloads and selected links to the native [Firelink](https://github.com/nimbold/Firelink) desktop app. Every captured link opens in Firelink's Add window first, so you can review metadata, choose a location, and decide whether to start now or queue it.
+Firelink Companion sends browser downloads, selected links, and explicit media fetches to the native [Firelink](https://github.com/nimbold/Firelink) desktop app. Every captured link opens in Firelink's Add window first, so you can review metadata, choose a location, and decide whether to start now or queue it.
 
 The extension signs every localhost handoff with the pairing token from Firelink, verifies the desktop app before trusting it, and keeps the original browser download unless Firelink confirms it accepted the request.
 
@@ -49,7 +49,7 @@ After installing:
 
 | Component | Requirement |
 | --- | --- |
-| Firelink desktop app | `1.0.0` or newer |
+| Firelink desktop app | `1.0.2` or newer recommended |
 | Firelink local protocol | v3 for automatic captures; v4 for explicit Fetch media intent |
 | Firefox desktop | 140 or newer |
 | Chromium browsers | Current desktop builds with Manifest V3 extension service workers |
@@ -88,6 +88,10 @@ Use this only for local testing or add-on review work:
 5. Pair the temporary extension from Firelink **Settings -> Integrations**.
 
 Temporary Firefox add-ons are removed when the browser restarts.
+
+## Fetch Media
+
+Use **Fetch media** from the popup or the page context menu when a page needs Firelink to inspect video or audio options. This path requires Firelink's local protocol v4, forwards cookies only for that one page when needed, and still opens Firelink's Add window before the download starts.
 
 ## Offline Launch Notes
 

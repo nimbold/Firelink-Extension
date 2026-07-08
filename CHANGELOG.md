@@ -2,7 +2,7 @@
 
 All notable changes to Firelink Companion will be documented in this file.
 
-## Unreleased
+## [2.0.2] - 2026-07-08
 
 ### New
 - Add Fetch media actions in the popup and page/video/audio context menus.
