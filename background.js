@@ -459,7 +459,9 @@ async function fetchMediaForTab(tab, options = {}) {
   const accepted = await sendToFirelink([pageURL], pageURL, {
     allowProtocolFallback: true,
     cookieStoreId: tab?.cookieStoreId,
-    forwardCookies: true,
+    // yt-dlp handles media cookies through Firelink's configured browser
+    // source. A full page Cookie header can exceed YouTube's request limit.
+    forwardCookies: false,
     includeUserAgent: false,
     media: true,
     notifyOnFailure: options.notifyOnFailure !== false

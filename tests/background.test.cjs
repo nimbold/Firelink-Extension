@@ -609,7 +609,7 @@ test("selected-link context menu falls back to selected text when tab is unavail
   });
 });
 
-test("popup media fetch sends active page with container cookies", async () => {
+test("popup media fetch sends the active page without a full cookie header", async () => {
   let payload = null;
   let requiredProtocolVersion = null;
   const fixture = createBackgroundContext(
@@ -645,14 +645,10 @@ test("popup media fetch sends active page with container cookies", async () => {
     urls: ["https://youtube.com/watch?v=abc"],
     referer: "https://youtube.com/watch?v=abc",
     silent: false,
-    cookies: "session=private",
     media: true
   });
   assert.equal(requiredProtocolVersion, 4);
-  assert.deepEqual(JSON.parse(JSON.stringify(fixture.cookieQueries)), [{
-    url: "https://youtube.com/watch?v=abc",
-    storeId: "firefox-container-2"
-  }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.cookieQueries)), []);
 });
 
 test("media context menu sends the tab page instead of transient media src", async () => {
