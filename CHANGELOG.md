@@ -2,6 +2,11 @@
 
 All notable changes to Firelink Companion will be documented in this file.
 
+## Unreleased
+
+### Fixed
+- Keep explicit media fetches on Firelink's configured yt-dlp cookie source instead of forwarding a potentially oversized raw browser cookie header.
+
 ## [2.0.2] - 2026-07-08
 
 ### New
@@ -10,7 +15,7 @@ All notable changes to Firelink Companion will be documented in this file.
 ### Improved
 - Compact the popup layout so pairing, capture, per-site controls, and media fetch fit without long guidance text.
 - Require Firelink local protocol v4 for explicit Fetch media handoffs so older desktop builds do not silently treat them as normal downloads.
-- Forward container-aware cookies only for explicit single-page media fetches and automatic single-download captures.
+- Forward container-aware cookies only for automatic single-download captures; explicit media uses Firelink's configured yt-dlp cookie source.
 
 ### Fixed
 - Fall back to selected-text URL parsing when the browser cannot expose a tab for the selected-link context menu.

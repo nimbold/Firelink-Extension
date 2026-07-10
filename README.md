@@ -91,7 +91,7 @@ Temporary Firefox add-ons are removed when the browser restarts.
 
 ## Fetch Media
 
-Use **Fetch media** from the popup or the page context menu when a page needs Firelink to inspect video or audio options. This path requires Firelink's local protocol v4, forwards cookies only for that one page when needed, and still opens Firelink's Add window before the download starts.
+Use **Fetch media** from the popup or the page context menu when a page needs Firelink to inspect video or audio options. This path requires Firelink's local protocol v4, sends the canonical page URL without a raw browser cookie header, and still opens Firelink's Add window before the download starts. Firelink uses its configured media cookie source when yt-dlp needs browser authentication.
 
 ## Offline Launch Notes
 

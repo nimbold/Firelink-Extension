@@ -625,7 +625,7 @@ test("popup media fetch sends the active page without a full cookie header", asy
       }],
       cookiesByUrl: {
         "https://youtube.com/watch?v=abc": [
-          { name: "session", value: "private" }
+          { name: "oversized", value: "x".repeat(64 * 1024) }
         ]
       }
     }
