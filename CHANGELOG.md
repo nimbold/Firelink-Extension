@@ -2,10 +2,11 @@
 
 All notable changes to Firelink Companion will be documented in this file.
 
-## Unreleased
+## [2.0.3] - 2026-07-12
 
 ### Fixed
 - Keep explicit media fetches on Firelink's configured yt-dlp cookie source instead of forwarding a potentially oversized raw browser cookie header.
+- Keep ordinary captured downloads able to use their browser session while preventing explicit media requests from carrying stale or oversized cookies into metadata fetching.
 
 ## [2.0.2] - 2026-07-08
 

@@ -5,7 +5,7 @@
 
   **The browser bridge for Firelink's desktop download manager.**
 
-  [![Version](https://img.shields.io/badge/version-2.0.2-6f42c1?style=flat-square)](https://github.com/nimbold/Firelink-Extension/releases)
+  [![Version](https://img.shields.io/badge/version-2.0.3-6f42c1?style=flat-square)](https://github.com/nimbold/Firelink-Extension/releases)
   [![Firefox](https://img.shields.io/badge/Firefox-140%2B-FF7139?style=flat-square&logo=firefox-browser&logoColor=white)](https://addons.mozilla.org/en-US/firefox/addon/firelink-companion/)
   [![Chromium](https://img.shields.io/badge/Chromium-Manual%20Install-4285F4?style=flat-square&logo=googlechrome&logoColor=white)](#manual-chromium-installation)
   [![Manifest V3](https://img.shields.io/badge/Manifest-V3-4285F4?style=flat-square)](manifest.json)
@@ -42,14 +42,14 @@ After installing:
 - Signed HMAC-SHA256 requests to Firelink's local server.
 - Desktop identity checks before trusting localhost responses.
 - Safe fallback behavior that resumes browser downloads when Firelink is closed or rejects a handoff.
-- Cookie handoff only for explicit single-page media fetches and automatic single-download captures that need the browser session.
+- Cookie handoff only for automatic single-download captures that need the browser session. Explicit media fetches send the page URL without a raw browser Cookie header.
 - Dynamic local port discovery across `127.0.0.1:6412-6422`.
 
 ## Requirements
 
 | Component | Requirement |
 | --- | --- |
-| Firelink desktop app | `1.0.2` or newer recommended |
+| Firelink desktop app | `1.0.4` or newer recommended |
 | Firelink local protocol | v3 for automatic captures; v4 for explicit Fetch media intent |
 | Firefox desktop | 140 or newer |
 | Chromium browsers | Current desktop builds with Manifest V3 extension service workers |
@@ -126,9 +126,9 @@ firelink-chromium.zip
 
 ## Privacy
 
-Firelink Companion handles URLs, referrers, selected link text, filenames, request headers, and cookies only to deliver the chosen browser download to the local Firelink app. It does not send that data to a remote service.
+Firelink Companion handles URLs, referrers, selected link text, filenames, request headers, and cookies only to deliver the chosen browser download to the local Firelink app. Explicit Fetch media sends the canonical page URL without a raw browser Cookie header; Firelink uses its configured media cookie source when authentication is needed. The extension does not send this data to a remote service.
 
-Cookie forwarding is intentionally narrow and limited to explicit single-page media fetches and automatic single-download captures where the desktop app needs the browser session.
+Cookie forwarding is intentionally narrow and limited to automatic single-download captures where the desktop app needs the browser session.
 
 ## License
 
