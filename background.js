@@ -256,6 +256,7 @@ function enqueueLaunchDelivery(token, payload, requiredProtocolVersion) {
       token,
       payload: Object.freeze({ ...payload, urls: Object.freeze([...payload.urls]) }),
       requiredProtocolVersion,
+      deadline: Date.now() + LAUNCH_TIMEOUT_MS,
       resolve
     });
     if (!launchSession.running) {
@@ -266,7 +267,6 @@ function enqueueLaunchDelivery(token, payload, requiredProtocolVersion) {
 }
 
 async function runLaunchSession(session) {
-  const deadline = Date.now() + LAUNCH_TIMEOUT_MS;
   let tabId = null;
   let launchFailed = false;
   let deliveryFailed = false;
@@ -276,13 +276,13 @@ async function runLaunchSession(session) {
     if (tabId === null) {
       throw new Error("Firelink protocol is not registered");
     }
-    await waitForFirelink(session.entries[0].token, deadline);
+    await waitForFirelink(session.entries[0].token, session.entries[0].deadline);
 
     let index = 0;
     while (index < session.entries.length) {
       const entry = session.entries[index];
       try {
-        entry.result = await deliverAfterStartup(entry, deadline);
+        entry.result = await deliverAfterStartup(entry, entry.deadline);
       } catch (error) {
         entry.result = false;
         deliveryFailed = true;

@@ -90,6 +90,14 @@
 
     requireProtocolVersion(response, PROTOCOL_VERSION);
 
+    if (response.status === 403) {
+      throw new FirelinkRequestError(
+        "Firelink rejected the pairing token",
+        403,
+        true
+      );
+    }
+
     const reportedPort = Number(response.headers.get(SERVER_PORT_HEADER));
     const actualProof = response.headers.get(SERVER_PROOF_HEADER) || "";
     const expectedProof = await generateServerProof(token, timestamp, nonce, port);
@@ -181,6 +189,14 @@
       return server;
     } catch (error) {
       controllers.forEach(controller => controller.abort());
+      const authError = error.errors?.find(
+        candidate => candidate instanceof FirelinkRequestError
+          && candidate.status === 403
+          && candidate.serverReached
+      );
+      if (authError) {
+        throw authError;
+      }
       const protocolError = error.errors?.find(
         candidate => candidate instanceof FirelinkRequestError
           && candidate.status === 426

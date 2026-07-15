@@ -71,6 +71,55 @@ test("uses desktop port range server identity headers", () => {
   assert.equal(PROTOCOL_VERSION, 3);
 });
 
+test("preserves a desktop 403 as an invalid pairing token", async () => {
+  const originalFetch = global.fetch;
+  const { signedFetch } = loadProtocol();
+
+  global.fetch = async () => new Response(null, {
+    status: 403,
+    headers: {
+      "X-Firelink-Server": "1",
+      "X-Firelink-Protocol-Version": "4"
+    }
+  });
+
+  try {
+    await assert.rejects(
+      () => signedFetch("/ping", "wrong-token"),
+      error => {
+        assert.equal(error.status, 403);
+        assert.equal(error.serverReached, true);
+        return true;
+      }
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("does not classify an incompatible 403 responder as the desktop app", async () => {
+  const originalFetch = global.fetch;
+  const { signedFetch } = loadProtocol();
+
+  global.fetch = async () => new Response(null, {
+    status: 403,
+    headers: { "X-Firelink-Server": "1" }
+  });
+
+  try {
+    await assert.rejects(
+      () => signedFetch("/ping", "wrong-token"),
+      error => {
+        assert.equal(error.status, 426);
+        assert.equal(error.serverReached, true);
+        return true;
+      }
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test("generates expected HMAC-SHA256 request signature", async () => {
   const { generateHMAC } = loadProtocol();
   const token = "pairing-token";

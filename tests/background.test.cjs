@@ -360,6 +360,41 @@ test("concurrent manual actions share one launch and deliver each payload once",
   assert.deepEqual(fixture.removedTabs, [1]);
 });
 
+test("queued launch deliveries keep their own startup deadline", async () => {
+  let now = 0;
+  let downloadCalls = 0;
+  let secondPromise;
+  const fixture = createBackgroundContext(async path => {
+    if (path === "/ping") {
+      return { ok: true };
+    }
+
+    downloadCalls += 1;
+    if (downloadCalls === 1) {
+      now = 14000;
+      secondPromise = vm.runInContext(
+        'enqueueLaunchDelivery("pairing-token", { urls: ["https://example.com/two.zip"] })',
+        fixture.context
+      );
+      now = 16000;
+    }
+    return { ok: true };
+  }, {
+    Date: { now: () => now }
+  });
+
+  const firstPromise = vm.runInContext(
+    'enqueueLaunchDelivery("pairing-token", { urls: ["https://example.com/one.zip"] })',
+    fixture.context
+  );
+  const firstResult = await firstPromise;
+  const secondResult = await secondPromise;
+
+  assert.equal(firstResult, true);
+  assert.equal(secondResult, true);
+  assert.equal(downloadCalls, 2);
+});
+
 test("automatic capture launches Firelink when the desktop app is closed", async () => {
   let directDownloadAttempts = 0;
   let deliveredPayload = null;
