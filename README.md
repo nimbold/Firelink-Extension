@@ -5,7 +5,7 @@
 
   **The browser bridge for Firelink's desktop download manager.**
 
-  [![Version](https://img.shields.io/badge/version-2.0.3-6f42c1?style=flat-square)](https://github.com/nimbold/Firelink-Extension/releases)
+  [![Version](https://img.shields.io/badge/version-2.0.4-6f42c1?style=flat-square)](https://github.com/nimbold/Firelink-Extension/releases)
   [![Firefox](https://img.shields.io/badge/Firefox-140%2B-FF7139?style=flat-square&logo=firefox-browser&logoColor=white)](https://addons.mozilla.org/en-US/firefox/addon/firelink-companion/)
   [![Chromium](https://img.shields.io/badge/Chromium-Manual%20Install-4285F4?style=flat-square&logo=googlechrome&logoColor=white)](#manual-chromium-installation)
   [![Manifest V3](https://img.shields.io/badge/Manifest-V3-4285F4?style=flat-square)](manifest.json)
@@ -17,6 +17,8 @@
 Firelink Companion sends browser downloads, selected links, and explicit media fetches to the native [Firelink](https://github.com/nimbold/Firelink) desktop app. Every captured link opens in Firelink's Add window first, so you can review metadata, choose a location, and decide whether to start now or queue it.
 
 The extension signs every localhost handoff with the pairing token from Firelink, verifies the desktop app before trusting it, and keeps the original browser download unless Firelink confirms it accepted the request.
+
+The current Companion release is **2.0.4**, paired with Firelink **1.1.0**.
 
 ## Install
 

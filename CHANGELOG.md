@@ -2,6 +2,14 @@
 
 All notable changes to Firelink Companion will be documented in this file.
 
+## [2.0.4] - 2026-07-15
+
+### Improved
+- Make browser-to-Firelink handoffs more reliable when Firelink is still starting or several requests arrive together. Each request now keeps its own startup deadline.
+
+### Fixed
+- Show invalid pairing tokens as authentication errors and avoid mistaking unrelated local `403` responses for the Firelink desktop app.
+
 ## [2.0.3] - 2026-07-12
 
 ### Fixed
