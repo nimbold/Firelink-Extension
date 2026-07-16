@@ -9,7 +9,7 @@
   const SERVER_PROOF_HEADER = "X-Firelink-Server-Proof";
   const SERVER_PORT_HEADER = "X-Firelink-Server-Port";
   const SERVER_PROOF_PREFIX = "firelink-server-proof";
-  const PROTOCOL_VERSION = 3;
+  const PROTOCOL_VERSION = 4;
   const DISCOVERY_TIMEOUT_MS = 750;
   const REQUEST_TIMEOUT_MS = 5000;
 
@@ -230,9 +230,15 @@
       return server.response;
     }
 
+    const timestamp = Date.now().toString();
+    const nonce = generateNonce();
     let response;
     try {
-      response = await requestAtPort(server.port, path, token, options);
+      response = await requestAtPort(server.port, path, token, {
+        ...options,
+        timestamp,
+        clientNonce: nonce
+      });
     } catch (error) {
       preferredPort = null;
       throw new FirelinkRequestError(
@@ -253,6 +259,7 @@
     if (!response.ok) {
       throw rejectedResponse(response);
     }
+    await verifyServerProof(response, token, timestamp, nonce, server.port);
     return response;
   }
 

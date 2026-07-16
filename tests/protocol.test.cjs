@@ -21,7 +21,7 @@ function serverProof(token, timestamp, nonce, port) {
 function firelinkResponseForRequest(url, options = {}, settings = {}) {
   const token = settings.token || "secret";
   const status = settings.status || 200;
-  const protocolVersion = settings.protocolVersion || 3;
+  const protocolVersion = settings.protocolVersion || 4;
   const port = Number(new URL(url).port);
   const proofPort = settings.proofPort || port;
   const timestamp = header(options, "X-Firelink-Timestamp");
@@ -68,7 +68,7 @@ test("uses desktop port range server identity headers", () => {
   assert.equal(PROTOCOL_VERSION_HEADER, "X-Firelink-Protocol-Version");
   assert.equal(SERVER_PROOF_HEADER, "X-Firelink-Server-Proof");
   assert.equal(SERVER_PORT_HEADER, "X-Firelink-Server-Port");
-  assert.equal(PROTOCOL_VERSION, 3);
+  assert.equal(PROTOCOL_VERSION, 4);
 });
 
 test("preserves a desktop 403 as an invalid pairing token", async () => {
@@ -178,6 +178,10 @@ test("discovers Firelink before sending signed download payload", async () => {
     const download = seen.find(entry => entry.url.endsWith("/download"));
     assert.ok(ping);
     assert.ok(download);
+    assert.match(
+      download.options.headers["X-Firelink-Client-Nonce"],
+      /^[a-f0-9]{32}$/i
+    );
     assert.equal(
       download.options.headers["X-Firelink-Signature"],
       await generateHMAC(
@@ -387,6 +391,39 @@ test("rejects relayed proof from a different bound port", async () => {
       }
     );
     assert.equal(seen.filter(url => url.endsWith("/download")).length, 0);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("rejects a post-discovery response without a bound server proof", async () => {
+  const originalFetch = global.fetch;
+  const { FirelinkRequestError, signedFetch } = loadProtocol();
+
+  global.fetch = async (url, options = {}) => {
+    if (url.endsWith("/ping")) return firelinkResponseForRequest(url, options);
+    return new Response(null, {
+      status: 200,
+      headers: {
+        "X-Firelink-Server": "1",
+        "X-Firelink-Protocol-Version": "4"
+      }
+    });
+  };
+
+  try {
+    await assert.rejects(
+      () => signedFetch("/download", "secret", {
+        method: "POST",
+        payload: { urls: ["https://example.com/file.zip"] }
+      }),
+      error => {
+        assert.ok(error instanceof FirelinkRequestError);
+        assert.equal(error.status, 426);
+        assert.equal(error.serverReached, true);
+        return true;
+      }
+    );
   } finally {
     global.fetch = originalFetch;
   }
