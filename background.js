@@ -16,7 +16,10 @@ const LAUNCH_TIMEOUT_MS = 15000;
 const LAUNCH_RETRY_MS = 500;
 const LAUNCH_TIMEOUTS_BEFORE_COOLDOWN = 2;
 const LAUNCH_COOLDOWN_MS = 60000;
+const CAPTURE_FILENAME_SETTLE_TIMEOUT_MS = 2500;
+const WEAK_CAPTURE_FILENAMES = new Set(["identifier", "download", "view", "uc"]);
 let launchSession = null;
+const pendingDownloadFilenameWaits = new Map();
 
 const settingsLoaded = new Promise(resolve => {
   chrome.storage.local.get(
@@ -340,6 +343,107 @@ async function collectCookieHeader(url, cookieStoreId) {
   }
 }
 
+function captureCookieScopeUrls(rawUrl) {
+  let parsed;
+  try {
+    parsed = new URL(rawUrl);
+  } catch (error) {
+    return [];
+  }
+
+  const urls = [parsed.toString()];
+  const hostname = parsed.hostname.toLowerCase();
+  const isGoogleCapture = hostname === "mail.google.com"
+    || hostname === "accounts.google.com"
+    || hostname === "googleusercontent.com"
+    || hostname.endsWith(".googleusercontent.com");
+  if (!isGoogleCapture) {
+    return urls;
+  }
+
+  const origins = [
+    `https://${hostname}/`,
+    "https://mail.google.com/",
+    "https://accounts.google.com/",
+    "https://googleusercontent.com/"
+  ];
+
+  return [...new Set([...urls, ...origins])];
+}
+
+async function collectCookieScopes(url, cookieStoreId) {
+  const scopeUrls = captureCookieScopeUrls(url);
+  const scopes = await Promise.all(scopeUrls.map(async scopeUrl => ({
+    url: scopeUrl,
+    cookies: await collectCookieHeader(scopeUrl, cookieStoreId)
+  })));
+  return scopes.filter(scope => scope.cookies);
+}
+
+async function resolveCookieStoreId(options = {}) {
+  if (typeof options.cookieStoreId === "string" && options.cookieStoreId) {
+    return options.cookieStoreId;
+  }
+  if (options.incognito !== true) {
+    return undefined;
+  }
+  if (typeof chrome.cookies.getAllCookieStores !== "function") {
+    return null;
+  }
+
+  try {
+    const stores = await new Promise(resolve => {
+      chrome.cookies.getAllCookieStores(resolve);
+    });
+    return stores?.find(store => store.incognito)?.id || null;
+  } catch (error) {
+    return null;
+  }
+}
+
+function normalizeCaptureFilename(value) {
+  if (typeof value !== "string") {
+    return "";
+  }
+  return value.replace(/^.*[\\/]/, "").trim();
+}
+
+function isUsableCaptureFilename(value) {
+  const filename = normalizeCaptureFilename(value);
+  return Boolean(filename) && !WEAK_CAPTURE_FILENAMES.has(filename.toLowerCase());
+}
+
+function settleDownloadFilenameWait(downloadId, filename) {
+  const pending = pendingDownloadFilenameWaits.get(downloadId);
+  if (!pending) {
+    return;
+  }
+  pendingDownloadFilenameWaits.delete(downloadId);
+  clearTimeout(pending.timeout);
+  pending.resolve(isUsableCaptureFilename(filename) ? normalizeCaptureFilename(filename) : undefined);
+}
+
+function waitForDownloadFilename(downloadItem) {
+  const initialFilename = normalizeCaptureFilename(downloadItem.filename);
+  if (isUsableCaptureFilename(initialFilename)) {
+    return {
+      promise: Promise.resolve(initialFilename),
+      cancel: () => {}
+    };
+  }
+
+  let resolveWait;
+  const promise = new Promise(resolve => {
+    resolveWait = resolve;
+  });
+  const timeout = setTimeout(() => settleDownloadFilenameWait(downloadItem.id), CAPTURE_FILENAME_SETTLE_TIMEOUT_MS);
+  pendingDownloadFilenameWaits.set(downloadItem.id, { resolve: resolveWait, timeout });
+  return {
+    promise,
+    cancel: () => settleDownloadFilenameWait(downloadItem.id)
+  };
+}
+
 async function sendToFirelink(urls, referer = "", options = {}) {
   await settingsLoaded;
 
@@ -360,9 +464,14 @@ async function sendToFirelink(urls, referer = "", options = {}) {
 
   const shouldForwardCookies = normalizedURLs.length === 1
     && (captureMode === "automatic" || options.forwardCookies === true);
-  const cookieString = shouldForwardCookies
-    ? await collectCookieHeader(normalizedURLs[0], options.cookieStoreId)
-    : "";
+  const cookieStoreId = shouldForwardCookies
+    ? await resolveCookieStoreId(options)
+    : undefined;
+  const cookieScopes = shouldForwardCookies
+    && cookieStoreId !== null
+    ? await collectCookieScopes(normalizedURLs[0], cookieStoreId)
+    : [];
+  const cookieString = cookieScopes.find(scope => scope.url === normalizedURLs[0])?.cookies || "";
 
   const payload = {
     urls: normalizedURLs,
@@ -371,6 +480,7 @@ async function sendToFirelink(urls, referer = "", options = {}) {
     filename: options.filename,
     headers: options.includeUserAgent === false ? undefined : `User-Agent: ${navigator.userAgent}`,
     cookies: cookieString || undefined,
+    cookie_scopes: cookieScopes.length > 0 ? cookieScopes : undefined,
     media: options.media === true
   };
 
@@ -459,6 +569,7 @@ async function fetchMediaForTab(tab, options = {}) {
   const accepted = await sendToFirelink([pageURL], pageURL, {
     allowProtocolFallback: true,
     cookieStoreId: tab?.cookieStoreId,
+    incognito: tab?.incognito === true,
     // yt-dlp handles media cookies through Firelink's configured browser
     // source. A full page Cookie header can exceed YouTube's request limit.
     forwardCookies: false,
@@ -480,7 +591,8 @@ function sendSelectionTextLinks(info, tab) {
     return false;
   }
   sendToFirelink(urls, tab?.url || "", {
-    cookieStoreId: tab?.cookieStoreId
+    cookieStoreId: tab?.cookieStoreId,
+    incognito: tab?.incognito === true
   });
   return true;
 }
@@ -503,7 +615,8 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId === "download-with-firelink") {
     if (info.linkUrl) {
       sendToFirelink([info.linkUrl], tab?.url || "", {
-        cookieStoreId: tab?.cookieStoreId
+        cookieStoreId: tab?.cookieStoreId,
+        incognito: tab?.incognito === true
       });
     }
     return;
@@ -548,7 +661,8 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 
           if (response?.links?.length > 0) {
             sendToFirelink(response.links, tab?.url || "", {
-              cookieStoreId: tab?.cookieStoreId
+              cookieStoreId: tab?.cookieStoreId,
+              incognito: tab?.incognito === true
             });
             return;
           }
@@ -568,18 +682,26 @@ function runDownloadAction(action, ...args) {
   });
 }
 
+chrome.downloads.onChanged.addListener(change => {
+  const filename = change.filename?.current;
+  if (filename !== undefined && isUsableCaptureFilename(filename)) {
+    settleDownloadFilenameWait(change.id, filename);
+  }
+});
+
 chrome.downloads.onCreated.addListener(async downloadItem => {
+  const filenameWait = waitForDownloadFilename(downloadItem);
   await settingsLoaded;
 
   if (!cachedSettings.extensionToken || !captureEnabledForURL(downloadItem.referrer || downloadItem.url)) {
+    filenameWait.cancel();
     return;
   }
 
-  const filename = downloadItem.filename
-    ? downloadItem.filename.replace(/^.*[\\/]/, "")
-    : undefined;
+  const filename = await filenameWait.promise;
   const paused = await runDownloadAction("pause", downloadItem.id);
   if (!paused) {
+    filenameWait.cancel();
     return;
   }
 
@@ -590,6 +712,7 @@ chrome.downloads.onCreated.addListener(async downloadItem => {
       allowProtocolFallback: true,
       captureMode: "automatic",
       cookieStoreId: downloadItem.cookieStoreId,
+      incognito: downloadItem.incognito === true,
       notifyOnFailure: false,
       filename
     }

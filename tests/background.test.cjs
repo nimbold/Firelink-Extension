@@ -33,11 +33,17 @@ function createBackgroundContext(signedFetch, options = {}) {
       getAll(details, callback) {
         cookieQueries.push(details);
         callback(options.cookiesByUrl?.[details.url] || []);
+      },
+      getAllCookieStores(callback) {
+        callback(options.cookieStores || []);
       }
     },
     downloads: {
       onCreated: {
         addListener(listener) { listeners.downloadCreated = listener; }
+      },
+      onChanged: {
+        addListener(listener) { listeners.downloadChanged = listener; }
       },
       pause(id, callback) {
         downloadActions.push(["pause", id]);
@@ -79,12 +85,17 @@ function createBackgroundContext(signedFetch, options = {}) {
     storage: {
       local: {
         get(_keys, callback) {
-          callback({
+          const result = {
             globalCapture: true,
             siteToggles: {},
             extensionToken: "pairing-token",
             ...options.settings
-          });
+          };
+          if (options.deferStorageGet) {
+            options.deferStorageGet(() => callback(result));
+          } else {
+            callback(result);
+          }
         },
         set(value) { storageWrites.push(value); }
       },
@@ -131,6 +142,7 @@ function createBackgroundContext(signedFetch, options = {}) {
     console,
     navigator: { userAgent: "Firefox Test" },
     setTimeout: options.setTimeout || setTimeout,
+    clearTimeout: options.clearTimeout || clearTimeout,
     Date: options.Date || Date
   });
   vm.runInContext(backgroundSource, context);
@@ -459,6 +471,183 @@ test("automatic capture marks the payload silent but still confirms success", as
     ["erase", { id: 7 }]
   ]);
   assert.equal(fixture.createdNotifications.length, 1);
+});
+
+test("automatic capture waits for a stabilized filename after a weak initial name", async () => {
+  let payload = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  });
+
+  const capture = fixture.listeners.downloadCreated({
+    id: 8,
+    url: "https://mail.google.com/mail/u/0/?view=att",
+    referrer: "https://mail.google.com/mail/u/0/",
+    filename: "/tmp/identifier"
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(fixture.downloadActions, []);
+  fixture.listeners.downloadChanged({
+    id: 8,
+    filename: { current: "/Users/test/Downloads/report.zip" }
+  });
+  await capture;
+
+  assert.equal(payload.filename, "report.zip");
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.downloadActions)), [
+    ["pause", 8],
+    ["cancel", 8],
+    ["erase", { id: 8 }]
+  ]);
+});
+
+test("automatic capture keeps filename changes that arrive during settings startup", async () => {
+  let payload = null;
+  let releaseStorage;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, {
+    deferStorageGet(release) {
+      releaseStorage = release;
+    }
+  });
+
+  const capture = fixture.listeners.downloadCreated({
+    id: 9,
+    url: "https://mail.google.com/mail/u/0/?view=att",
+    referrer: "https://mail.google.com/mail/u/0/",
+    filename: "/tmp/identifier"
+  });
+  fixture.listeners.downloadChanged({
+    id: 9,
+    filename: { current: "/Users/test/Downloads/startup-report.zip" }
+  });
+  releaseStorage();
+  await capture;
+
+  assert.equal(payload.filename, "startup-report.zip");
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.downloadActions)), [
+    ["pause", 9],
+    ["cancel", 9],
+    ["erase", { id: 9 }]
+  ]);
+});
+
+test("automatic Google captures carry host-scoped cookies for redirected auth", async () => {
+  let payload = null;
+  const gmailUrl = "https://mail.google.com/mail/u/0/?view=att";
+  const fixture = createBackgroundContext(
+    async (_path, _token, request) => {
+      payload = request.payload;
+      return { ok: true };
+    },
+    {
+      cookiesByUrl: {
+        [gmailUrl]: [{ name: "SID", value: "mail-session" }],
+        "https://mail.google.com/": [{ name: "SID", value: "mail-session" }],
+        "https://accounts.google.com/": [{ name: "LSID", value: "account-session" }]
+      }
+    }
+  );
+
+  await vm.runInContext(
+    `sendToFirelink([${JSON.stringify(gmailUrl)}], "https://mail.google.com/mail/u/0/", { captureMode: "automatic" })`,
+    fixture.context
+  );
+
+  assert.equal(payload.cookies, "SID=mail-session");
+  assert.deepEqual(JSON.parse(JSON.stringify(payload.cookie_scopes)), [
+    { url: gmailUrl, cookies: "SID=mail-session" },
+    { url: "https://mail.google.com/", cookies: "SID=mail-session" },
+    { url: "https://accounts.google.com/", cookies: "LSID=account-session" }
+  ]);
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.cookieQueries)), [
+    { url: gmailUrl },
+    { url: "https://mail.google.com/" },
+    { url: "https://accounts.google.com/" },
+    { url: "https://googleusercontent.com/" }
+  ]);
+});
+
+test("automatic Google captures keep a single non-source cookie scope", async () => {
+  let payload = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, {
+    cookiesByUrl: {
+      "https://accounts.google.com/": [
+        { name: "SID", value: "account-session" }
+      ]
+    }
+  });
+
+  const accepted = await vm.runInContext(
+    'sendToFirelink(["https://mail.google.com/mail/u/0/?view=att"], "", { captureMode: "automatic" })',
+    fixture.context
+  );
+
+  assert.equal(accepted, true);
+  assert.equal(payload.cookies, undefined);
+  assert.deepEqual(JSON.parse(JSON.stringify(payload.cookie_scopes)), [
+    { url: "https://accounts.google.com/", cookies: "SID=account-session" }
+  ]);
+});
+
+test("automatic Chrome incognito captures use the incognito cookie store", async () => {
+  let payload = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, {
+    cookieStores: [
+      { id: "normal", incognito: false },
+      { id: "incognito", incognito: true }
+    ],
+    cookiesByUrl: {
+      "https://example.com/private.zip": [
+        { name: "session", value: "incognito-session" }
+      ]
+    }
+  });
+
+  const accepted = await vm.runInContext(
+    'sendToFirelink(["https://example.com/private.zip"], "", { captureMode: "automatic", incognito: true })',
+    fixture.context
+  );
+
+  assert.equal(accepted, true);
+  assert.equal(payload.cookies, "session=incognito-session");
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.cookieQueries)), [{
+    url: "https://example.com/private.zip",
+    storeId: "incognito"
+  }]);
+});
+
+test("never falls back to normal-profile cookies when incognito storage is unavailable", async () => {
+  let payload = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, {
+    cookieStores: [],
+    cookiesByUrl: {
+      "https://example.com/private.zip": [
+        { name: "session", value: "normal-session" }
+      ]
+    }
+  });
+
+  const accepted = await vm.runInContext(
+    'sendToFirelink(["https://example.com/private.zip"], "", { captureMode: "automatic", incognito: true })',
+    fixture.context
+  );
+
+  assert.equal(accepted, true);
+  assert.equal(payload.cookies, undefined);
+  assert.deepEqual(fixture.cookieQueries, []);
 });
 
 test("never shares first-party cookies across a multi-host batch", async () => {
