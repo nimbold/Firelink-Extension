@@ -2,6 +2,18 @@
 
 All notable changes to Firelink Companion will be documented in this file.
 
+## [2.0.5] - 2026-07-17
+
+This patch release improves browser captures that pass through authenticated redirects.
+
+### Improved
+- Preserve the final filename and the correct browser authentication through redirects, including Gmail attachments and Chrome Incognito sessions. This addresses the download report in [Firelink #21](https://github.com/nimbold/Firelink/issues/21).
+- Make local handoff responses clearly authenticated so the extension can distinguish Firelink from unrelated local services.
+- Keep Firefox and Chromium package checks aligned for the latest release.
+
+### Fixed
+- Stop saving sign-in pages or using cookies on the wrong host when a browser download is redirected.
+
 ## [2.0.4] - 2026-07-15
 
 ### Improved

@@ -5,7 +5,7 @@
 
   **The browser bridge for Firelink's desktop download manager.**
 
-  [![Version](https://img.shields.io/badge/version-2.0.4-6f42c1?style=flat-square)](https://github.com/nimbold/Firelink-Extension/releases)
+  [![Version](https://img.shields.io/badge/version-2.0.5-6f42c1?style=flat-square)](https://github.com/nimbold/Firelink-Extension/releases)
   [![Firefox](https://img.shields.io/badge/Firefox-140%2B-FF7139?style=flat-square&logo=firefox-browser&logoColor=white)](https://addons.mozilla.org/en-US/firefox/addon/firelink-companion/)
   [![Chromium](https://img.shields.io/badge/Chromium-Manual%20Install-4285F4?style=flat-square&logo=googlechrome&logoColor=white)](#manual-chromium-installation)
   [![Manifest V3](https://img.shields.io/badge/Manifest-V3-4285F4?style=flat-square)](manifest.json)
@@ -14,11 +14,11 @@
 
 ## What It Does
 
-Firelink Companion sends browser downloads, selected links, and explicit media fetches to the native [Firelink](https://github.com/nimbold/Firelink) desktop app. Every captured link opens in Firelink's Add window first, so you can review metadata, choose a location, and decide whether to start now or queue it.
+Firelink Companion connects browser downloads, selected links, and media fetches to the native [Firelink](https://github.com/nimbold/Firelink) desktop app. Captured links open in Firelink's Add window first, where you can review the download before starting or queuing it.
 
-The extension signs every localhost handoff with the pairing token from Firelink, verifies the desktop app before trusting it, and keeps the original browser download unless Firelink confirms it accepted the request.
+The extension signs every local handoff with Firelink's pairing token, verifies the desktop app before trusting it, and keeps the original browser download unless Firelink confirms acceptance.
 
-The current Companion release is **2.0.4**, paired with Firelink **1.1.0**.
+The current Companion release is **2.0.5**, paired with Firelink **1.1.1**. Use the [latest Firelink desktop release](https://github.com/nimbold/Firelink/releases) with the [latest Companion release](https://github.com/nimbold/Firelink-Extension/releases).
 
 ## Install
 
@@ -44,6 +44,7 @@ After installing:
 - Signed HMAC-SHA256 requests to Firelink's local server.
 - Desktop identity checks before trusting localhost responses.
 - Safe fallback behavior that resumes browser downloads when Firelink is closed or rejects a handoff.
+- Reliable filenames and origin-scoped authentication through redirects, including Gmail downloads and Chrome Incognito.
 - Cookie handoff only for automatic single-download captures that need the browser session. Explicit media fetches send the page URL without a raw browser Cookie header.
 - Dynamic local port discovery across `127.0.0.1:6412-6422`.
 
@@ -51,7 +52,7 @@ After installing:
 
 | Component | Requirement |
 | --- | --- |
-| Firelink desktop app | `1.0.4` or newer recommended |
+| Firelink desktop app | `1.1.1` or newer recommended |
 | Firelink local protocol | v3 for automatic captures; v4 for explicit Fetch media intent |
 | Firefox desktop | 140 or newer |
 | Chromium browsers | Current desktop builds with Manifest V3 extension service workers |
