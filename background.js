@@ -28,6 +28,18 @@ let pendingCaptureMutation = Promise.resolve();
 let pendingCaptureRecovery = null;
 const activeAutomaticCaptures = new Set();
 
+const truncateByCodePoints = (value, maxCodePoints) =>
+  Array.from(value).slice(0, maxCodePoints).join("");
+
+const reportContextMenuHandoffFailure = (action, error) => {
+  console.error(`Firelink ${action} handoff failed:`, error);
+};
+
+const sendContextMenuHandoff = (urls, referer, options) => {
+  void sendToFirelink(urls, referer, options)
+    .catch(error => reportContextMenuHandoffFailure("context-menu", error));
+};
+
 const settingsLoaded = new Promise(resolve => {
   chrome.storage.local.get(
     ["globalCapture", "siteToggles", "extensionToken", "launchTimeoutCount", "launchCooldownUntil"],
@@ -695,6 +707,12 @@ async function sendToFirelink(urls, referer = "", options = {}) {
     cookie_scopes: cookieScopes.length > 0 ? cookieScopes : undefined,
     media: options.media === true
   };
+  if (options.batch === true && normalizedURLs.length >= 2) {
+    payload.batch = true;
+    if (typeof options.batchName === "string" && options.batchName.trim()) {
+      payload.batch_name = truncateByCodePoints(options.batchName.trim(), 512);
+    }
+  }
 
   const requiredProtocolVersion = options.media === true
     ? MEDIA_FETCH_PROTOCOL_VERSION
@@ -958,9 +976,11 @@ function sendSelectionTextLinks(info, tab) {
   if (urls.length === 0) {
     return false;
   }
-  sendToFirelink(urls, tab?.url || "", {
+  sendContextMenuHandoff(urls, tab?.url || "", {
     cookieStoreId: tab?.cookieStoreId,
-    incognito: tab?.incognito === true
+    incognito: tab?.incognito === true,
+    batch: true,
+    batchName: tab?.title
   });
   return true;
 }
@@ -982,7 +1002,7 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId === "download-with-firelink") {
     if (info.linkUrl) {
-      sendToFirelink([info.linkUrl], tab?.url || "", {
+      sendContextMenuHandoff([info.linkUrl], tab?.url || "", {
         cookieStoreId: tab?.cookieStoreId,
         incognito: tab?.incognito === true
       });
@@ -991,10 +1011,10 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   }
 
   if (info.menuItemId === "fetch-media-with-firelink") {
-    fetchMediaForTab(tab, {
+    void fetchMediaForTab(tab, {
       srcUrl: info.srcUrl,
       notifyOnSuccess: true
-    });
+    }).catch(error => reportContextMenuHandoffFailure("media context-menu", error));
     return;
   }
 
@@ -1028,9 +1048,11 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
           }
 
           if (response?.links?.length > 0) {
-            sendToFirelink(response.links, tab?.url || "", {
+            sendContextMenuHandoff(response.links, tab?.url || "", {
               cookieStoreId: tab?.cookieStoreId,
-              incognito: tab?.incognito === true
+              incognito: tab?.incognito === true,
+              batch: true,
+              batchName: tab?.title
             });
             return;
           }

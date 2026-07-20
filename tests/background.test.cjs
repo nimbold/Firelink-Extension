@@ -1011,6 +1011,7 @@ test("selected-link context menu prefers extracted anchor links", async () => {
     {
       id: 12,
       url: "https://example.com/page",
+      title: "Example Gallery / Chapter: 1",
       cookieStoreId: "firefox-container-2"
     }
   );
@@ -1029,8 +1030,41 @@ test("selected-link context menu prefers extracted anchor links", async () => {
     referer: "https://example.com/page",
     silent: false,
     headers: "User-Agent: Firefox Test",
-    media: false
+    media: false,
+    batch: true,
+    batch_name: "Example Gallery / Chapter: 1"
   });
+});
+
+test("truncates selected-link batch titles without splitting Unicode characters", async () => {
+  let payload = null;
+  const fixture = createBackgroundContext(
+    async (_path, _token, request) => {
+      payload = request.payload;
+      return { ok: true };
+    },
+    {
+      selectionResponse: {
+        links: ["https://example.com/one.zip", "https://example.com/two.zip"]
+      }
+    }
+  );
+
+  fixture.listeners.contextMenu(
+    {
+      menuItemId: "download-selected-with-firelink",
+      selectionText: "https://fallback.example/ignored.zip"
+    },
+    {
+      id: 12,
+      url: "https://example.com/page",
+      title: `${"😀".repeat(512)}x`
+    }
+  );
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(payload.batch_name, "😀".repeat(512));
+  assert.equal(Array.from(payload.batch_name).length, 512);
 });
 
 test("selected-link context menu falls back to selected text when tab is unavailable", async () => {
