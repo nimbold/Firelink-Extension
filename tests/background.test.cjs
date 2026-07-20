@@ -16,10 +16,13 @@ function createBackgroundContext(signedFetch, options = {}) {
   const downloadActions = [];
   const removedTabs = [];
   const storageWrites = [];
+  const alarmsCreated = [];
   const contextMenuItems = [];
   const executedScripts = [];
   const sentMessages = [];
   const listeners = {};
+  const deferredStorageCallbacks = [];
+  let deferredStorageGetCount = 0;
   const noopEvent = { addListener() {} };
   const chrome = {
     contextMenus: {
@@ -60,6 +63,21 @@ function createBackgroundContext(signedFetch, options = {}) {
       erase(query, callback) {
         downloadActions.push(["erase", query]);
         callback();
+      },
+      search(query, callback) {
+        const item = options.downloadsById?.[query.id];
+        callback(item ? [item] : []);
+      }
+    },
+    alarms: {
+      onAlarm: {
+        addListener(listener) { listeners.alarm = listener; }
+      },
+      create(name, alarmInfo) {
+        alarmsCreated.push([name, alarmInfo]);
+      },
+      clear() {
+        return Promise.resolve(true);
       }
     },
     notifications: {
@@ -89,15 +107,29 @@ function createBackgroundContext(signedFetch, options = {}) {
             globalCapture: true,
             siteToggles: {},
             extensionToken: "pairing-token",
+            ...(options.pendingCaptures
+              ? { pendingAutomaticCaptures: options.pendingCaptures }
+              : {}),
             ...options.settings
           };
-          if (options.deferStorageGet) {
-            options.deferStorageGet(() => callback(result));
+          if (options.deferStorageGet && (
+            !options.deferStorageGetOnce || deferredStorageGetCount++ === 0
+          )) {
+            deferredStorageCallbacks.push(() => callback(result));
+            options.deferStorageGet(() => {
+              const callbacks = deferredStorageCallbacks.splice(0);
+              callbacks.forEach(release => release());
+            });
+          } else if (Object.prototype.hasOwnProperty.call(options, "storageGetResult")) {
+            callback(options.storageGetResult);
           } else {
             callback(result);
           }
         },
-        set(value) { storageWrites.push(value); }
+        set(value, callback) {
+          storageWrites.push(value);
+          callback?.();
+        }
       },
       onChanged: noopEvent
     },
@@ -122,7 +154,11 @@ function createBackgroundContext(signedFetch, options = {}) {
       },
       remove(id, callback) {
         removedTabs.push(id);
-        callback?.();
+        if (options.deferTabRemove) {
+          options.deferTabRemove(() => callback?.());
+        } else {
+          callback?.();
+        }
       },
       sendMessage(tabId, message, callback) {
         sentMessages.push({ tabId, message });
@@ -134,6 +170,9 @@ function createBackgroundContext(signedFetch, options = {}) {
       }
     }
   };
+  if (options.omitCookiesApi) {
+    delete chrome.cookies;
+  }
   const context = vm.createContext({
     AbortController,
     FirelinkProtocol: { signedFetch },
@@ -152,6 +191,7 @@ function createBackgroundContext(signedFetch, options = {}) {
     createdTabs,
     removedTabs,
     storageWrites,
+    alarmsCreated,
     cookieQueries,
     downloadActions,
     contextMenuItems,
@@ -372,6 +412,52 @@ test("concurrent manual actions share one launch and deliver each payload once",
   assert.deepEqual(fixture.removedTabs, [1]);
 });
 
+test("launch cleanup serializes a new handoff until the old tab is closed", async () => {
+  let downloadCalls = 0;
+  const tabCloseReleases = [];
+  const fixture = createBackgroundContext(async path => {
+    if (path === "/download") {
+      downloadCalls += 1;
+    }
+    if (path === "/download" && (downloadCalls === 1 || downloadCalls === 3)) {
+      throw { serverReached: false, requestMayHaveBeenSent: false };
+    }
+    return { ok: true };
+  }, {
+    deferTabRemove(release) {
+      tabCloseReleases.push(release);
+    }
+  });
+
+  const firstPromise = vm.runInContext(
+    'sendToFirelink(["https://example.com/one.zip"])',
+    fixture.context
+  );
+  while (tabCloseReleases.length === 0) {
+    await new Promise(resolve => setImmediate(resolve));
+  }
+
+  const secondPromise = vm.runInContext(
+    'sendToFirelink(["https://example.com/two.zip"])',
+    fixture.context
+  );
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(fixture.createdTabs.length, 1);
+
+  tabCloseReleases.shift()();
+  while (tabCloseReleases.length === 0) {
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  tabCloseReleases.shift()();
+  assert.equal(await firstPromise, true);
+  assert.equal(await secondPromise, true);
+  assert.deepEqual(fixture.createdTabs.map(tab => tab.url), [
+    "firelink://launch",
+    "firelink://launch"
+  ]);
+  assert.deepEqual(fixture.removedTabs, [1, 2]);
+});
+
 test("queued launch deliveries keep their own startup deadline", async () => {
   let now = 0;
   let downloadCalls = 0;
@@ -487,7 +573,7 @@ test("automatic capture waits for a stabilized filename after a weak initial nam
     filename: "/tmp/identifier"
   });
   await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(fixture.downloadActions, []);
+  assert.deepEqual(fixture.downloadActions, [["pause", 8]]);
   fixture.listeners.downloadChanged({
     id: 8,
     filename: { current: "/Users/test/Downloads/report.zip" }
@@ -502,6 +588,46 @@ test("automatic capture waits for a stabilized filename after a weak initial nam
   ]);
 });
 
+test("automatic capture leaves the browser download paused when handoff delivery is ambiguous", async () => {
+  const fixture = createBackgroundContext(async () => {
+    throw { serverReached: true, status: 504 };
+  });
+
+  await fixture.listeners.downloadCreated({
+    id: 10,
+    url: "https://example.com/file.zip",
+    referrer: "https://example.com/page",
+    filename: "/tmp/file.zip"
+  });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.downloadActions)), [["pause", 10]]);
+  assert.match(fixture.createdNotifications[0][0].title, /Handoff Needs Attention/);
+});
+
+test("automatic capture keeps the original paused when a launched handoff is ambiguous", async () => {
+  let directAttempt = true;
+  const fixture = createBackgroundContext(async path => {
+    if (path === "/download") {
+      if (directAttempt) {
+        directAttempt = false;
+        throw { serverReached: false, requestMayHaveBeenSent: false };
+      }
+      throw { serverReached: true, status: 504 };
+    }
+    return { ok: true };
+  });
+
+  await fixture.listeners.downloadCreated({
+    id: 11,
+    url: "https://example.com/file.zip",
+    referrer: "https://example.com/page",
+    filename: "/tmp/file.zip"
+  });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.downloadActions)), [["pause", 11]]);
+  assert.ok(fixture.createdNotifications.some(args => /Handoff Needs Attention/.test(args[0].title)));
+});
+
 test("automatic capture keeps filename changes that arrive during settings startup", async () => {
   let payload = null;
   let releaseStorage;
@@ -509,6 +635,7 @@ test("automatic capture keeps filename changes that arrive during settings start
     payload = request.payload;
     return { ok: true };
   }, {
+    deferStorageGetOnce: true,
     deferStorageGet(release) {
       releaseStorage = release;
     }
@@ -520,6 +647,8 @@ test("automatic capture keeps filename changes that arrive during settings start
     referrer: "https://mail.google.com/mail/u/0/",
     filename: "/tmp/identifier"
   });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(fixture.downloadActions, [["pause", 9]]);
   fixture.listeners.downloadChanged({
     id: 9,
     filename: { current: "/Users/test/Downloads/startup-report.zip" }
@@ -532,6 +661,105 @@ test("automatic capture keeps filename changes that arrive during settings start
     ["pause", 9],
     ["cancel", 9],
     ["erase", { id: 9 }]
+  ]);
+});
+
+test("automatic capture without the cookies API remains recoverable", async () => {
+  let payload = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, { omitCookiesApi: true });
+
+  await fixture.listeners.downloadCreated({
+    id: 12,
+    url: "https://example.com/file.zip",
+    referrer: "https://example.com/page",
+    filename: "/tmp/file.zip",
+    incognito: true
+  });
+
+  assert.equal(payload.cookies, undefined);
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.downloadActions)), [
+    ["pause", 12],
+    ["cancel", 12],
+    ["erase", { id: 12 }]
+  ]);
+});
+
+test("storage startup errors do not leave a new download paused", async () => {
+  const fixture = createBackgroundContext(async () => ({ ok: true }), {
+    storageGetResult: undefined
+  });
+
+  await fixture.listeners.downloadCreated({
+    id: 13,
+    url: "https://example.com/file.zip",
+    referrer: "https://example.com/page",
+    filename: "/tmp/file.zip"
+  });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.downloadActions)), [
+    ["pause", 13],
+    ["resume", 13]
+  ]);
+});
+
+test("worker restart treats an in-flight automatic handoff as ambiguous", async () => {
+  const fixture = createBackgroundContext(async () => ({ ok: true }), {
+    pendingCaptures: {
+      "14": {
+        id: 14,
+        url: "https://example.com/file.zip",
+        referrer: "https://example.com/page",
+        filename: "file.zip",
+        phase: "sending"
+      }
+    },
+    downloadsById: {
+      14: {
+        id: 14,
+        url: "https://example.com/file.zip",
+        state: "paused"
+      }
+    }
+  });
+
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(fixture.downloadActions, []);
+  assert.ok(fixture.createdNotifications.some(args => /Handoff Needs Attention/.test(args[0].title)));
+});
+
+test("worker restart safely retries a capture that never started sending", async () => {
+  let payload = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, {
+    pendingCaptures: {
+      "15": {
+        id: 15,
+        url: "https://example.com/file.zip",
+        referrer: "https://example.com/page",
+        filename: "file.zip",
+        phase: "ready"
+      }
+    },
+    downloadsById: {
+      15: {
+        id: 15,
+        url: "https://example.com/file.zip",
+        state: "paused"
+      }
+    }
+  });
+
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(payload.filename, "file.zip");
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.downloadActions)), [
+    ["pause", 15],
+    ["cancel", 15],
+    ["erase", { id: 15 }]
   ]);
 });
 
