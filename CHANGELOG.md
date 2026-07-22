@@ -16,6 +16,7 @@ This patch release makes browser captures safer during startup, restarts, and mu
 - Remember in-progress automatic captures across service-worker restarts and retry only the handoffs that are safe to retry.
 - Queue concurrent launch handoffs and wait for old launch tabs to close before starting a new session.
 - Keep ambiguous handoffs paused with a clear notification instead of risking a duplicate browser download.
+- Continue the authenticated browser-capture reliability work from [Firelink #21](https://github.com/nimbold/Firelink/issues/21) by preserving the original download when a handoff may already have reached Firelink.
 - Keep selected-link batch names safe for long and Unicode page titles, and report context-menu handoff failures instead of leaving them silent.
 
 ### Fixes
