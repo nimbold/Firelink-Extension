@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Firelink Companion",
-  "version": "2.0.5",
+  "version": "2.0.6",
   "description": "Send browser downloads and links to the Firelink desktop download manager.",
   "permissions": [
     "downloads",

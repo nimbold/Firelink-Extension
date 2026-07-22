@@ -2,17 +2,27 @@
 
 All notable changes to Firelink Companion will be documented in this file.
 
-## [2.0.5] - 2026-07-17
+## [2.0.6] - 2026-07-22
 
-This patch release improves browser captures that pass through authenticated redirects.
+This patch release makes browser captures safer during startup, restarts, and multiple simultaneous handoffs.
 
-### Improved
-- Preserve the final filename and the correct browser authentication through redirects, including Gmail attachments and Chrome Incognito sessions. This addresses the download report in [Firelink #21](https://github.com/nimbold/Firelink/issues/21).
-- Make local handoff responses clearly authenticated so the extension can distinguish Firelink from unrelated local services.
-- Keep Firefox and Chromium package checks aligned for the latest release.
+### New features
 
-### Fixed
-- Stop saving sign-in pages or using cookies on the wrong host when a browser download is redirected.
+- **Batch selected links** from the context menu, passing the page title to Firelink so related files can be grouped in an optional folder. This completes the browser side of [Firelink #27](https://github.com/nimbold/Firelink/issues/27).
+
+### Improvements
+
+- Pause automatic browser captures while their filename settles, then forward the final useful filename to Firelink.
+- Remember in-progress automatic captures across service-worker restarts and retry only the handoffs that are safe to retry.
+- Queue concurrent launch handoffs and wait for old launch tabs to close before starting a new session.
+- Keep ambiguous handoffs paused with a clear notification instead of risking a duplicate browser download.
+- Keep selected-link batch names safe for long and Unicode page titles, and report context-menu handoff failures instead of leaving them silent.
+
+### Fixes
+
+- Prevent automatic captures from being lost, duplicated, or resumed too early when Firelink is starting, unavailable, or responds ambiguously.
+- Recover captures when browser cookie APIs are unavailable without forwarding an invalid cookie header.
+- Keep cleanup, filename updates, and worker-restart recovery from acting on the wrong browser download.
 
 ## [2.0.4] - 2026-07-15
 
