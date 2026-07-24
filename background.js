@@ -27,6 +27,15 @@ const pendingDownloadFilenameWaits = new Map();
 let pendingCaptureMutation = Promise.resolve();
 let pendingCaptureRecovery = null;
 const activeAutomaticCaptures = new Set();
+const SETTINGS_KEYS = [
+  "globalCapture",
+  "siteToggles",
+  "extensionToken",
+  "launchTimeoutCount",
+  "launchCooldownUntil"
+];
+let settingsLoadInProgress = true;
+const settingsChangedDuringLoad = new Set();
 
 const truncateByCodePoints = (value, maxCodePoints) =>
   Array.from(value).slice(0, maxCodePoints).join("");
@@ -41,48 +50,46 @@ const sendContextMenuHandoff = (urls, referer, options) => {
 };
 
 const settingsLoaded = new Promise(resolve => {
-  chrome.storage.local.get(
-    ["globalCapture", "siteToggles", "extensionToken", "launchTimeoutCount", "launchCooldownUntil"],
-    result => {
-      result = result && typeof result === "object" ? result : {};
-      if (result.globalCapture !== undefined) {
-        cachedSettings.globalCapture = result.globalCapture;
-      }
-      if (result.siteToggles !== undefined) {
-        cachedSettings.siteToggles = result.siteToggles;
-      }
-      if (result.extensionToken !== undefined) {
-        cachedSettings.extensionToken = result.extensionToken;
-      }
-      if (result.launchTimeoutCount !== undefined) {
-        cachedSettings.launchTimeoutCount = result.launchTimeoutCount;
-      }
-      if (result.launchCooldownUntil !== undefined) {
-        cachedSettings.launchCooldownUntil = result.launchCooldownUntil;
-      }
-      resolve();
+  const finish = result => {
+    result = result && typeof result === "object" ? result : {};
+    if (result.globalCapture !== undefined && !settingsChangedDuringLoad.has("globalCapture")) {
+      cachedSettings.globalCapture = result.globalCapture;
     }
-  );
+    if (result.siteToggles !== undefined && !settingsChangedDuringLoad.has("siteToggles")) {
+      cachedSettings.siteToggles = result.siteToggles;
+    }
+    if (result.extensionToken !== undefined && !settingsChangedDuringLoad.has("extensionToken")) {
+      cachedSettings.extensionToken = result.extensionToken;
+    }
+    if (result.launchTimeoutCount !== undefined && !settingsChangedDuringLoad.has("launchTimeoutCount")) {
+      cachedSettings.launchTimeoutCount = result.launchTimeoutCount;
+    }
+    if (result.launchCooldownUntil !== undefined && !settingsChangedDuringLoad.has("launchCooldownUntil")) {
+      cachedSettings.launchCooldownUntil = result.launchCooldownUntil;
+    }
+    settingsLoadInProgress = false;
+    resolve();
+  };
+
+  try {
+    chrome.storage.local.get(SETTINGS_KEYS, finish);
+  } catch (error) {
+    finish({});
+  }
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") {
     return;
   }
-  if (changes.globalCapture) {
-    cachedSettings.globalCapture = changes.globalCapture.newValue;
-  }
-  if (changes.siteToggles) {
-    cachedSettings.siteToggles = changes.siteToggles.newValue;
-  }
-  if (changes.extensionToken) {
-    cachedSettings.extensionToken = changes.extensionToken.newValue;
-  }
-  if (changes.launchTimeoutCount) {
-    cachedSettings.launchTimeoutCount = changes.launchTimeoutCount.newValue;
-  }
-  if (changes.launchCooldownUntil) {
-    cachedSettings.launchCooldownUntil = changes.launchCooldownUntil.newValue;
+  for (const key of SETTINGS_KEYS) {
+    if (!Object.prototype.hasOwnProperty.call(changes, key)) {
+      continue;
+    }
+    if (settingsLoadInProgress) {
+      settingsChangedDuringLoad.add(key);
+    }
+    cachedSettings[key] = changes[key].newValue;
   }
 });
 
@@ -184,8 +191,27 @@ function captureEnabledForURL(rawURL) {
     const hostname = new URL(rawURL).hostname;
     return cachedSettings.siteToggles?.[hostname] !== true;
   } catch (error) {
-    return true;
+    return false;
   }
+}
+
+function automaticCaptureAllowedForDownload(rawURL, referrer = "") {
+  if (!normalizeURL(rawURL)) {
+    return false;
+  }
+
+  let settingsURL = rawURL;
+  if (typeof referrer === "string" && referrer.trim()) {
+    try {
+      new URL(referrer);
+      settingsURL = referrer;
+    } catch (error) {
+      // A malformed referrer must not hide an otherwise valid download URL.
+    }
+  }
+
+  return Boolean(cachedSettings.extensionToken)
+    && captureEnabledForURL(settingsURL);
 }
 
 function notify(title, message) {
@@ -351,16 +377,18 @@ function savePendingCapture(record) {
 }
 
 function updatePendingCapture(recordId, changes) {
+  let updated = false;
   return mutatePendingCaptureMap(current => {
     const existing = current[String(recordId)];
     if (!existing) {
       return current;
     }
+    updated = true;
     return {
       ...current,
       [String(recordId)]: { ...existing, ...changes, updatedAt: Date.now() }
     };
-  }).then(() => true, () => false);
+  }).then(() => updated, () => false);
 }
 
 function removePendingCapture(recordId) {
@@ -374,6 +402,12 @@ function removePendingCapture(recordId) {
 async function markAmbiguousCapture(recordId) {
   await updatePendingCapture(recordId, { phase: "uncertain" });
   notifyAmbiguousAutomaticCapture();
+}
+
+async function removePendingCaptureAndResume(recordId) {
+  const removed = await removePendingCapture(recordId);
+  await runDownloadAction("resume", recordId);
+  return removed;
 }
 
 function findDownload(downloadId) {
@@ -808,76 +842,91 @@ async function handleAutomaticCapture(downloadItem, filenameWait, pendingRecord 
   const record = pendingRecord || createPendingCaptureRecord(downloadItem);
   activeAutomaticCaptures.add(record.id);
   try {
-  if (!pendingRecord) {
-    await savePendingCapture(record);
-  }
-
-  await settingsLoaded;
-
-  if (!cachedSettings.extensionToken || !captureEnabledForURL(record.referrer || record.url)) {
-    if (filenameWait) {
-      filenameWait.cancel();
+    if (!pendingRecord && !await savePendingCapture(record)) {
+      await runDownloadAction("resume", record.id);
+      return;
     }
-    await removePendingCapture(record.id);
-    await runDownloadAction("resume", record.id);
-    return;
-  }
 
-  const filename = filenameWait
-    ? await filenameWait.promise
-    : record.filename;
-  record.filename = filename || record.filename;
-  await updatePendingCapture(record.id, {
-    filename: record.filename,
-    phase: "ready"
-  });
-  await updatePendingCapture(record.id, { phase: "sending" });
+    await settingsLoaded;
 
-  let handoffMayHaveBeenSent = false;
-  let accepted = false;
-  try {
-    accepted = await sendToFirelink(
-      [record.url],
-      record.referrer,
-      {
-        allowProtocolFallback: true,
-        captureMode: "automatic",
-        cookieStoreId: record.cookieStoreId,
-        incognito: record.incognito,
-        notifyOnFailure: false,
-        filename: record.filename || undefined,
-        onRequestMayHaveBeenSent: () => {
-          handoffMayHaveBeenSent = true;
-        }
+    if (!automaticCaptureAllowedForDownload(record.url, record.referrer)) {
+      if (filenameWait) {
+        filenameWait.cancel();
       }
-    );
-  } catch (error) {
-    handoffMayHaveBeenSent = true;
-  }
+      await removePendingCaptureAndResume(record.id);
+      return;
+    }
 
-  if (!accepted) {
-    if (handoffMayHaveBeenSent) {
+    const filename = filenameWait
+      ? await filenameWait.promise
+      : record.filename;
+    record.filename = filename || record.filename;
+    if (!automaticCaptureAllowedForDownload(record.url, record.referrer)) {
+      await removePendingCaptureAndResume(record.id);
+      return;
+    }
+    if (!await updatePendingCapture(record.id, {
+      filename: record.filename,
+      phase: "ready"
+    })) {
+      await runDownloadAction("resume", record.id);
+      return;
+    }
+    if (!await updatePendingCapture(record.id, { phase: "sending" })) {
+      await runDownloadAction("resume", record.id);
+      return;
+    }
+    if (!automaticCaptureAllowedForDownload(record.url, record.referrer)) {
+      await updatePendingCapture(record.id, { phase: "ready" });
+      await removePendingCaptureAndResume(record.id);
+      return;
+    }
+
+    let handoffMayHaveBeenSent = false;
+    let accepted = false;
+    try {
+      accepted = await sendToFirelink(
+        [record.url],
+        record.referrer,
+        {
+          allowProtocolFallback: true,
+          captureMode: "automatic",
+          cookieStoreId: record.cookieStoreId,
+          incognito: record.incognito,
+          notifyOnFailure: false,
+          filename: record.filename || undefined,
+          onRequestMayHaveBeenSent: () => {
+            handoffMayHaveBeenSent = true;
+          }
+        }
+      );
+    } catch (error) {
+      handoffMayHaveBeenSent = true;
+    }
+
+    if (!accepted) {
+      if (handoffMayHaveBeenSent) {
+        await markAmbiguousCapture(record.id);
+        return;
+      }
+      await updatePendingCapture(record.id, { phase: "ready" });
+      await removePendingCaptureAndResume(record.id);
+      return;
+    }
+
+    if (!await updatePendingCapture(record.id, { phase: "accepted" })) {
       await markAmbiguousCapture(record.id);
       return;
     }
+    await runDownloadAction("cancel", record.id);
+    await runDownloadAction("erase", { id: record.id });
     await removePendingCapture(record.id);
-    await runDownloadAction("resume", record.id);
-    return;
-  }
-
-  if (!await updatePendingCapture(record.id, { phase: "accepted" })) {
-    await markAmbiguousCapture(record.id);
-    return;
-  }
-  await runDownloadAction("cancel", record.id);
-  await runDownloadAction("erase", { id: record.id });
-  await removePendingCapture(record.id);
-  chrome.notifications.create({
-    type: "basic",
-    iconUrl: "icons/icon-128.png",
-    title: "Firelink Download Capture",
-    message: "Download automatically forwarded to Firelink."
-  });
+    chrome.notifications.create({
+      type: "basic",
+      iconUrl: "icons/icon-128.png",
+      title: "Firelink Download Capture",
+      message: "Download automatically forwarded to Firelink."
+    });
   } finally {
     activeAutomaticCaptures.delete(record.id);
   }
@@ -889,6 +938,7 @@ async function recoverPendingCaptures() {
   }
 
   pendingCaptureRecovery = (async () => {
+    await settingsLoaded;
     const pending = await readPendingCaptureMap();
     for (const record of Object.values(pending)) {
       if (activeAutomaticCaptures.has(record.id)) {
@@ -913,6 +963,14 @@ async function recoverPendingCaptures() {
       }
 
       if (record.phase === "uncertain") {
+        continue;
+      }
+
+      if (!automaticCaptureAllowedForDownload(record.url, record.referrer)) {
+        await removePendingCapture(record.id);
+        if (downloadItem.paused === true) {
+          await runDownloadAction("resume", record.id);
+        }
         continue;
       }
 
@@ -1093,6 +1151,12 @@ chrome.downloads.onChanged.addListener(change => {
 
 chrome.downloads.onCreated.addListener(async downloadItem => {
   const filenameWait = waitForDownloadFilename(downloadItem);
+  await settingsLoaded;
+  if (!automaticCaptureAllowedForDownload(downloadItem.url, downloadItem.referrer)) {
+    filenameWait.cancel();
+    return;
+  }
+
   const paused = await runDownloadAction("pause", downloadItem.id);
   if (!paused) {
     filenameWait.cancel();

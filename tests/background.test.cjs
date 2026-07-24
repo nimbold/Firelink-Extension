@@ -23,6 +23,7 @@ function createBackgroundContext(signedFetch, options = {}) {
   const listeners = {};
   const deferredStorageCallbacks = [];
   let deferredStorageGetCount = 0;
+  let persistedPendingCaptures = options.pendingCaptures || {};
   const noopEvent = { addListener() {} };
   const chrome = {
     contextMenus: {
@@ -107,9 +108,7 @@ function createBackgroundContext(signedFetch, options = {}) {
             globalCapture: true,
             siteToggles: {},
             extensionToken: "pairing-token",
-            ...(options.pendingCaptures
-              ? { pendingAutomaticCaptures: options.pendingCaptures }
-              : {}),
+            pendingAutomaticCaptures: persistedPendingCaptures,
             ...options.settings
           };
           if (options.deferStorageGet && (
@@ -128,10 +127,23 @@ function createBackgroundContext(signedFetch, options = {}) {
         },
         set(value, callback) {
           storageWrites.push(value);
+          const storageSetFailed = options.storageSetError
+            || (options.storageSetErrorAfter !== undefined
+              && storageWrites.length > options.storageSetErrorAfter);
+          if (storageSetFailed) {
+            chrome.runtime.lastError = {
+              message: options.storageSetError || "storage unavailable"
+            };
+          } else if (Object.prototype.hasOwnProperty.call(value, "pendingAutomaticCaptures")) {
+            persistedPendingCaptures = value.pendingAutomaticCaptures;
+          }
           callback?.();
+          chrome.runtime.lastError = null;
         }
       },
-      onChanged: noopEvent
+      onChanged: {
+        addListener(listener) { listeners.storageChanged = listener; }
+      }
     },
     tabs: {
       query(_queryInfo, callback) {
@@ -628,7 +640,7 @@ test("automatic capture keeps the original paused when a launched handoff is amb
   assert.ok(fixture.createdNotifications.some(args => /Handoff Needs Attention/.test(args[0].title)));
 });
 
-test("automatic capture keeps filename changes that arrive during settings startup", async () => {
+test("automatic capture waits for settings before pausing and keeps filename changes", async () => {
   let payload = null;
   let releaseStorage;
   const fixture = createBackgroundContext(async (_path, _token, request) => {
@@ -648,7 +660,7 @@ test("automatic capture keeps filename changes that arrive during settings start
     filename: "/tmp/identifier"
   });
   await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(fixture.downloadActions, [["pause", 9]]);
+  assert.deepEqual(fixture.downloadActions, []);
   fixture.listeners.downloadChanged({
     id: 9,
     filename: { current: "/Users/test/Downloads/startup-report.zip" }
@@ -687,6 +699,126 @@ test("automatic capture without the cookies API remains recoverable", async () =
   ]);
 });
 
+test("disabled site capture leaves a new Firefox download untouched", async () => {
+  let handoffCalls = 0;
+  const fixture = createBackgroundContext(async () => {
+    handoffCalls += 1;
+    return { ok: true };
+  }, {
+    settings: {
+      siteToggles: { "example.com": true }
+    }
+  });
+
+  await fixture.listeners.downloadCreated({
+    id: 16,
+    url: "https://downloads.example.com/file.zip",
+    referrer: "https://example.com/downloads",
+    filename: "/tmp/file.zip"
+  });
+
+  assert.equal(handoffCalls, 0);
+  assert.deepEqual(fixture.downloadActions, []);
+});
+
+test("disabled global capture leaves a new Firefox download untouched", async () => {
+  let handoffCalls = 0;
+  const fixture = createBackgroundContext(async () => {
+    handoffCalls += 1;
+    return { ok: true };
+  }, {
+    settings: { globalCapture: false }
+  });
+
+  await fixture.listeners.downloadCreated({
+    id: 17,
+    url: "https://example.com/file.zip",
+    referrer: "https://example.com/page",
+    filename: "/tmp/file.zip"
+  });
+
+  assert.equal(handoffCalls, 0);
+  assert.deepEqual(fixture.downloadActions, []);
+});
+
+test("unpaired capture leaves a new Firefox download untouched", async () => {
+  let handoffCalls = 0;
+  const fixture = createBackgroundContext(async () => {
+    handoffCalls += 1;
+    return { ok: true };
+  }, {
+    settings: { extensionToken: "" }
+  });
+
+  await fixture.listeners.downloadCreated({
+    id: 18,
+    url: "https://example.com/file.zip",
+    referrer: "https://example.com/page",
+    filename: "/tmp/file.zip"
+  });
+
+  assert.equal(handoffCalls, 0);
+  assert.deepEqual(fixture.downloadActions, []);
+});
+
+test("malformed download URLs do not enter automatic capture", async () => {
+  let handoffCalls = 0;
+  const fixture = createBackgroundContext(async () => {
+    handoffCalls += 1;
+    return { ok: true };
+  });
+
+  await fixture.listeners.downloadCreated({
+    id: 20,
+    url: "not a URL",
+    referrer: "",
+    filename: "/tmp/file.zip"
+  });
+
+  assert.equal(handoffCalls, 0);
+  assert.deepEqual(fixture.downloadActions, []);
+});
+
+test("malformed referrers fall back to a valid download URL", async () => {
+  let handoffCalls = 0;
+  const fixture = createBackgroundContext(async () => {
+    handoffCalls += 1;
+    return { ok: true };
+  });
+
+  await fixture.listeners.downloadCreated({
+    id: 21,
+    url: "https://example.com/file.zip",
+    referrer: "not a URL",
+    filename: "/tmp/file.zip"
+  });
+
+  assert.equal(handoffCalls, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.downloadActions)), [
+    ["pause", 21],
+    ["cancel", 21],
+    ["erase", { id: 21 }]
+  ]);
+});
+
+test("a malformed target URL remains untouched even with a valid referrer", async () => {
+  let handoffCalls = 0;
+  const fixture = createBackgroundContext(async () => {
+    handoffCalls += 1;
+    return { ok: true };
+  });
+
+  await fixture.listeners.downloadCreated({
+    id: 22,
+    url: "not a URL",
+    referrer: "https://example.com/page",
+    filename: "/tmp/file.zip"
+  });
+
+  assert.equal(handoffCalls, 0);
+  assert.deepEqual(fixture.downloadActions, []);
+});
+
 test("storage startup errors do not leave a new download paused", async () => {
   const fixture = createBackgroundContext(async () => ({ ok: true }), {
     storageGetResult: undefined
@@ -699,10 +831,155 @@ test("storage startup errors do not leave a new download paused", async () => {
     filename: "/tmp/file.zip"
   });
 
-  assert.deepEqual(JSON.parse(JSON.stringify(fixture.downloadActions)), [
-    ["pause", 13],
-    ["resume", 13]
+  assert.deepEqual(fixture.downloadActions, []);
+});
+
+test("a setting changed during startup is not overwritten by stale storage data", async () => {
+  let releaseStorage;
+  const fixture = createBackgroundContext(async () => ({ ok: true }), {
+    deferStorageGetOnce: true,
+    deferStorageGet(release) {
+      releaseStorage = release;
+    }
+  });
+
+  const capture = fixture.listeners.downloadCreated({
+    id: 23,
+    url: "https://example.com/file.zip",
+    referrer: "https://example.com/page",
+    filename: "/tmp/file.zip"
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  fixture.listeners.storageChanged({
+    siteToggles: { newValue: { "example.com": true } }
+  }, "local");
+  releaseStorage();
+  await capture;
+
+  assert.deepEqual(fixture.downloadActions, []);
+});
+
+test("automatic capture resumes when pending-state persistence fails", async () => {
+  const fixture = createBackgroundContext(async () => ({ ok: true }), {
+    storageSetError: "storage unavailable"
+  });
+
+  await fixture.listeners.downloadCreated({
+    id: 24,
+    url: "https://example.com/file.zip",
+    referrer: "https://example.com/page",
+    filename: "/tmp/file.zip"
+  });
+
+  assert.deepEqual(fixture.downloadActions, [
+    ["pause", 24],
+    ["resume", 24]
   ]);
+});
+
+test("automatic capture resumes when a phase update cannot be persisted", async () => {
+  const fixture = createBackgroundContext(async () => ({ ok: true }), {
+    storageSetErrorAfter: 1
+  });
+
+  await fixture.listeners.downloadCreated({
+    id: 26,
+    url: "https://example.com/file.zip",
+    referrer: "https://example.com/page",
+    filename: "/tmp/file.zip"
+  });
+
+  assert.deepEqual(fixture.downloadActions, [
+    ["pause", 26],
+    ["resume", 26]
+  ]);
+});
+
+test("disabling a site while waiting for its filename resumes the original download", async () => {
+  let handoffCalls = 0;
+  const fixture = createBackgroundContext(async () => {
+    handoffCalls += 1;
+    return { ok: true };
+  });
+
+  const capture = fixture.listeners.downloadCreated({
+    id: 25,
+    url: "https://example.com/file.zip",
+    referrer: "https://example.com/page",
+    filename: "/tmp/identifier"
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  fixture.listeners.storageChanged({
+    siteToggles: { newValue: { "example.com": true } }
+  }, "local");
+  fixture.listeners.downloadChanged({
+    id: 25,
+    filename: { current: "/Users/test/Downloads/file.zip" }
+  });
+  await capture;
+
+  assert.equal(handoffCalls, 0);
+  assert.deepEqual(fixture.downloadActions, [
+    ["pause", 25],
+    ["resume", 25]
+  ]);
+});
+
+test("worker restart resumes a paused capture when its site is disabled", async () => {
+  const fixture = createBackgroundContext(async () => ({ ok: true }), {
+    settings: {
+      siteToggles: { "example.com": true }
+    },
+    pendingCaptures: {
+      "19": {
+        id: 19,
+        url: "https://downloads.example.com/file.zip",
+        referrer: "https://example.com/downloads",
+        filename: "file.zip",
+        phase: "ready"
+      }
+    },
+    downloadsById: {
+      19: {
+        id: 19,
+        url: "https://downloads.example.com/file.zip",
+        state: "in_progress",
+        paused: true
+      }
+    }
+  });
+
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(fixture.downloadActions, [["resume", 19]]);
+});
+
+test("worker restart resumes a disabled capture even when cleanup persistence fails", async () => {
+  const fixture = createBackgroundContext(async () => ({ ok: true }), {
+    settings: {
+      siteToggles: { "example.com": true }
+    },
+    storageSetError: "storage unavailable",
+    pendingCaptures: {
+      "27": {
+        id: 27,
+        url: "https://example.com/file.zip",
+        referrer: "https://example.com/page",
+        filename: "file.zip",
+        phase: "ready"
+      }
+    },
+    downloadsById: {
+      27: {
+        id: 27,
+        url: "https://example.com/file.zip",
+        state: "in_progress",
+        paused: true
+      }
+    }
+  });
+
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(fixture.downloadActions, [["resume", 27]]);
 });
 
 test("worker restart treats an in-flight automatic handoff as ambiguous", async () => {
