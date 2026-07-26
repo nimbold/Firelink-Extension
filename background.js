@@ -34,8 +34,10 @@ const SETTINGS_KEYS = [
   "launchTimeoutCount",
   "launchCooldownUntil"
 ];
+const CAPTURE_POLICY_KEYS = new Set(["globalCapture", "siteToggles", "extensionToken"]);
 let settingsLoadInProgress = true;
 const settingsChangedDuringLoad = new Set();
+let capturePolicyRevision = 0;
 
 const truncateByCodePoints = (value, maxCodePoints) =>
   Array.from(value).slice(0, maxCodePoints).join("");
@@ -90,6 +92,9 @@ chrome.storage.onChanged.addListener((changes, area) => {
       settingsChangedDuringLoad.add(key);
     }
     cachedSettings[key] = changes[key].newValue;
+    if (CAPTURE_POLICY_KEYS.has(key)) {
+      capturePolicyRevision += 1;
+    }
   }
 });
 
@@ -882,6 +887,7 @@ async function handleAutomaticCapture(downloadItem, filenameWait, pendingRecord 
       return;
     }
 
+    const handoffPolicyRevision = capturePolicyRevision;
     let handoffMayHaveBeenSent = false;
     let accepted = false;
     try {
@@ -911,6 +917,15 @@ async function handleAutomaticCapture(downloadItem, filenameWait, pendingRecord 
       }
       await updatePendingCapture(record.id, { phase: "ready" });
       await removePendingCaptureAndResume(record.id);
+      return;
+    }
+
+    if (capturePolicyRevision !== handoffPolicyRevision
+      || !automaticCaptureAllowedForDownload(record.url, record.referrer)) {
+      // The request may already have reached Firelink. The safe outcome is to
+      // keep the browser download paused and require the user to reconcile the
+      // possible duplicate rather than canceling the only known original.
+      await markAmbiguousCapture(record.id);
       return;
     }
 

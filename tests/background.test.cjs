@@ -640,6 +640,32 @@ test("automatic capture keeps the original paused when a launched handoff is amb
   assert.ok(fixture.createdNotifications.some(args => /Handoff Needs Attention/.test(args[0].title)));
 });
 
+test("automatic capture keeps the original paused when capture settings change during handoff", async () => {
+  let fixture;
+  let handoffCalls = 0;
+  const signedFetch = async path => {
+    if (path === "/download") {
+      handoffCalls += 1;
+      fixture.listeners.storageChanged({
+        globalCapture: { newValue: false }
+      }, "local");
+    }
+    return { ok: true };
+  };
+  fixture = createBackgroundContext(signedFetch);
+
+  await fixture.listeners.downloadCreated({
+    id: 28,
+    url: "https://example.com/file.zip",
+    referrer: "https://example.com/page",
+    filename: "/tmp/file.zip"
+  });
+
+  assert.equal(handoffCalls, 1);
+  assert.deepEqual(fixture.downloadActions, [["pause", 28]]);
+  assert.ok(fixture.createdNotifications.some(args => /Handoff Needs Attention/.test(args[0].title)));
+});
+
 test("automatic capture waits for settings before pausing and keeps filename changes", async () => {
   let payload = null;
   let releaseStorage;
