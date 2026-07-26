@@ -26,7 +26,8 @@ The project is actively maintained. Use the latest Companion release with the la
 
 ## Installation
 
-- **Firefox 140+:** [Install from Firefox Add-ons](https://addons.mozilla.org/en-US/firefox/addon/firelink-companion/).
+[![Install from Firefox Add-ons](https://img.shields.io/badge/Install%20from-Firefox%20Add--ons-FF7139?style=for-the-badge&logo=firefox-browser&logoColor=white)](https://addons.mozilla.org/en-US/firefox/addon/firelink-companion/)
+
 - **Chromium browsers:** Download `firelink-chromium.zip` from [the latest release](https://github.com/nimbold/Firelink-Extension/releases/latest).
   Follow the [manual installation guide](#manual-chromium-installation).
 
@@ -106,8 +107,6 @@ The build writes load-unpacked packages to `dist/firefox/` and `dist/chromium/`.
 Release packages are `firelink-firefox.zip` and `firelink-chromium.zip`. `firelink.zip` remains a Firefox-package compatibility alias.
 
 ## Credits
-
-Firelink Companion is maintained by [NimBold](https://github.com/nimbold).
 
 The extension uses standard [WebExtensions APIs](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions).
 It integrates with [Firelink](https://github.com/nimbold/Firelink).
