@@ -1,33 +1,36 @@
-<div align="center">
+# Firelink Companion
+
+> Browser integration for the Firelink desktop download manager.
+
+[![Latest release](https://img.shields.io/github/v/release/nimbold/Firelink-Extension?style=flat-square)](https://github.com/nimbold/Firelink-Extension/releases/latest)
+[![Firefox](https://img.shields.io/badge/Firefox-140%2B-FF7139?style=flat-square&logo=firefox-browser&logoColor=white)](#installation)
+[![Chromium](https://img.shields.io/badge/Chromium-Manual%20install-4285F4?style=flat-square&logo=googlechrome&logoColor=white)](#manual-chromium-installation)
+[![Manifest V3](https://img.shields.io/badge/Manifest-V3-4285F4?style=flat-square)](manifest.json)
+[![License](https://img.shields.io/github/license/nimbold/Firelink-Extension?style=flat-square)](LICENSE)
+
+<p align="center">
   <img src="icons/icon-128.png" alt="Firelink Companion" width="128" height="128" />
+</p>
 
-  # Firelink Companion
+## What it does
 
-  **The browser bridge for Firelink's desktop download manager.**
+Firelink Companion sends browser downloads, selected links, and media pages to the native [Firelink](https://github.com/nimbold/Firelink) app.
 
-  [![Version](https://img.shields.io/badge/version-2.0.6-6f42c1?style=flat-square)](https://github.com/nimbold/Firelink-Extension/releases)
-  [![Firefox](https://img.shields.io/badge/Firefox-140%2B-FF7139?style=flat-square&logo=firefox-browser&logoColor=white)](https://addons.mozilla.org/en-US/firefox/addon/firelink-companion/)
-  [![Chromium](https://img.shields.io/badge/Chromium-Manual%20Install-4285F4?style=flat-square&logo=googlechrome&logoColor=white)](#manual-chromium-installation)
-  [![Manifest V3](https://img.shields.io/badge/Manifest-V3-4285F4?style=flat-square)](manifest.json)
-  [![License](https://img.shields.io/github/license/nimbold/Firelink-Extension?style=flat-square)](LICENSE)
-</div>
+Captured links open Firelink's Add window first. You can review them before starting or queuing a download.
 
-## Overview
+## Status
 
-Firelink Companion sends browser downloads, selected links, and media pages to the native [Firelink](https://github.com/nimbold/Firelink) app. Captured links open in Firelink's Add window first, so you can review them before starting or queuing a download.
+The current Companion release is `2.0.6`. It is compatible with Firelink `1.2.0`.
 
-The extension signs local handoffs with Firelink's pairing token, checks the desktop app before trusting it, and keeps the original browser download unless Firelink confirms acceptance.
+The project is actively maintained. Use the latest Companion release with the latest Firelink release.
 
-The current Companion release is **2.0.6**, paired with [Firelink 1.2.0](https://github.com/nimbold/Firelink/releases). Use the [latest Companion release](https://github.com/nimbold/Firelink-Extension/releases) with the latest desktop release.
+## Installation
 
-## Install
+- **Firefox 140+:** [Install from Firefox Add-ons](https://addons.mozilla.org/en-US/firefox/addon/firelink-companion/).
+- **Chromium browsers:** Download `firelink-chromium.zip` from [the latest release](https://github.com/nimbold/Firelink-Extension/releases/latest).
+  Follow the [manual installation guide](#manual-chromium-installation).
 
-| Browser | How to install |
-| --- | --- |
-| Firefox 140+ | [Install Firelink Companion from Firefox Add-ons](https://addons.mozilla.org/en-US/firefox/addon/firelink-companion/) |
-| Chrome, Edge, Brave, Vivaldi, Opera, Chromium | Download `firelink-chromium.zip` from [GitHub Releases](https://github.com/nimbold/Firelink-Extension/releases), then follow [Manual Chromium Installation](#manual-chromium-installation). |
-
-After installing:
+After installation:
 
 1. Open Firelink.
 2. Go to **Settings -> Integrations**.
@@ -38,65 +41,57 @@ After installing:
 ## Features
 
 - Automatic capture for ordinary browser downloads.
-- **Batch selected links** from page context menus, with an optional Firelink folder named from the page title.
-- Media fetch from the popup or page context menu.
-- Link and selected-text context menus.
+- Batch selected links from page context menus.
+- Optional Firelink folders named from page titles.
+- Explicit **Fetch media** actions from the popup and context menu.
 - Firefox and Chromium Manifest V3 support.
-- Signed HMAC-SHA256 requests to Firelink's local server.
+- Signed local requests with HMAC-SHA256.
 - Desktop identity checks before trusting localhost responses.
-- Safe fallback behavior that resumes the browser download when Firelink is closed or rejects a handoff.
-- Reliable filenames and origin-scoped authentication through redirects, including Gmail downloads and Chrome Incognito.
-- Recovery for interrupted or ambiguous automatic captures without silently creating duplicate downloads.
-- Cookie handoff only for automatic single-download captures that need the browser session. Explicit media fetches send the page URL without a raw browser Cookie header.
+- Safe fallback when Firelink is closed or rejects a handoff.
+- Recovery for interrupted or ambiguous captures without silent duplicates.
 - Dynamic local port discovery across `127.0.0.1:6412-6422`.
 
-## Requirements
+## Handoff and privacy
 
-| Component | Requirement |
-| --- | --- |
-| Firelink desktop app | `1.2.0` or newer recommended |
-| Firelink local protocol | v3 for automatic captures; v4 for explicit Fetch media intent |
-| Firefox desktop | 140 or newer |
-| Chromium browsers | Current desktop builds with Manifest V3 extension service workers |
+- Ordinary captures may use browser cookies when the browser session requires them.
+- Explicit media requests send the canonical page URL, not a raw browser `Cookie` header.
+- Firelink handles media authentication through its configured media cookie source.
+- The original browser download is kept unless Firelink confirms the handoff.
+- Requests stay on the local machine. The extension does not send download data to a remote service.
 
-## Manual Chromium Installation
+## Manual Chromium installation
 
-Use this flow until Firelink Companion is published on the Chrome Web Store or another browser store.
+Chromium builds are distributed as load-unpacked packages until a browser-store release is available.
 
-1. Download `firelink-chromium.zip` from a Companion release.
-2. Extract it and keep the folder somewhere stable.
+1. Download `firelink-chromium.zip` from the [latest release](https://github.com/nimbold/Firelink-Extension/releases/latest).
+2. Extract the ZIP to a stable folder.
 3. Open your browser's extension manager:
 
-| Browser | Extension manager |
-| --- | --- |
-| Chrome / Chromium | `chrome://extensions` |
-| Edge | `edge://extensions` |
-| Brave | `brave://extensions` |
-| Vivaldi | `vivaldi://extensions` |
-| Opera | `opera:extensions` |
+   | Browser | Extension manager |
+   | --- | --- |
+   | Chrome / Chromium | `chrome://extensions` |
+   | Edge | `edge://extensions` |
+   | Brave | `brave://extensions` |
+   | Vivaldi | `vivaldi://extensions` |
+   | Opera | `opera:extensions` |
 
 4. Enable **Developer mode**.
-5. Click **Load unpacked**.
-6. Select the extracted folder containing `manifest.json`.
+5. Select **Load unpacked**.
+6. Choose the extracted folder containing `manifest.json`.
 7. Pair the extension from Firelink **Settings -> Integrations**.
 
-Manual Chromium installs do not auto-update. Extract the new ZIP and click **Reload** to update. Managed corporate or school browsers may disable Developer mode.
+Manual Chromium installs do not auto-update. Extract the new ZIP and click **Reload** after an update. Managed browsers may disable Developer mode.
 
-## Manual Firefox Installation
+## Temporary Firefox installation
 
-For local testing or add-on review:
+Use this flow for local testing or add-on review:
 
 1. Clone this repository.
-2. Open Firefox at `about:debugging#/runtime/this-firefox`.
-3. Select **Load Temporary Add-on...**.
-4. Choose `manifest.json`.
-5. Pair the extension from Firelink **Settings -> Integrations**.
+2. Open `about:debugging#/runtime/this-firefox` in Firefox.
+3. Select **Load Temporary Add-on...** and choose `manifest.json`.
+4. Pair the extension from Firelink **Settings -> Integrations**.
 
 Temporary Firefox add-ons are removed when Firefox restarts.
-
-## Fetch Media
-
-Use **Fetch media** when a page contains video or audio that Firelink should inspect. The extension sends the canonical page URL without a raw browser Cookie header; Firelink uses its configured media cookie source when authentication is needed. The request still opens Firelink's Add window before downloading.
 
 ## Development
 
@@ -106,10 +101,19 @@ npm run check
 npm run build
 ```
 
-`npm run build` writes load-unpacked packages to `dist/firefox/` and `dist/chromium/`. Releases contain `firelink.zip`, `firelink-firefox.zip`, and `firelink-chromium.zip`; `firelink.zip` is a compatibility alias for the Firefox package.
+The build writes load-unpacked packages to `dist/firefox/` and `dist/chromium/`.
 
-## Privacy and License
+Release packages are `firelink-firefox.zip` and `firelink-chromium.zip`. `firelink.zip` remains a Firefox-package compatibility alias.
 
-The extension handles URLs, referrers, selected link text, filenames, request headers, and cookies only to deliver the chosen browser download to the local Firelink app. It does not send this data to a remote service. Cookie forwarding is limited to automatic single-download captures that need the browser session.
+## Credits
+
+Firelink Companion is maintained by [NimBold](https://github.com/nimbold).
+
+The extension uses standard [WebExtensions APIs](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions).
+It integrates with [Firelink](https://github.com/nimbold/Firelink).
+
+Thanks to users who report browser compatibility issues, test releases, and review the integration.
+
+## License
 
 Firelink Companion is available under the [MIT License](LICENSE).
