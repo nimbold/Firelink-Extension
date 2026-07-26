@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="icons/icon-128.png" alt="Firelink Companion app icon" width="128" height="128" />
+</p>
+
 # Firelink Companion
 
 > Browser integration for the Firelink desktop download manager.
@@ -7,10 +11,6 @@
 [![Chromium](https://img.shields.io/badge/Chromium-Manual%20install-4285F4?style=flat-square&logo=googlechrome&logoColor=white)](#manual-chromium-installation)
 [![Manifest V3](https://img.shields.io/badge/Manifest-V3-4285F4?style=flat-square)](manifest.json)
 [![License](https://img.shields.io/github/license/nimbold/Firelink-Extension?style=flat-square)](LICENSE)
-
-<p align="center">
-  <img src="icons/icon-128.png" alt="Firelink Companion" width="128" height="128" />
-</p>
 
 ## What it does
 
