@@ -35,7 +35,7 @@ test("packages Firefox and Chromium load-unpacked directories", () => {
     );
 
     assert.deepEqual(firefoxManifest.background, {
-      scripts: ["protocol.js", "background.js"]
+      scripts: ["protocol.js", "popup/locales.js", "background.js"]
     });
     assert.equal(firefoxManifest.browser_specific_settings.gecko.id, "firelink@nimbold.github.io");
     assert.deepEqual(chromiumManifest.background, {
@@ -43,8 +43,10 @@ test("packages Firefox and Chromium load-unpacked directories", () => {
     });
     assert.equal(
       fs.readFileSync(path.join(outputRoot, "chromium", "chromium-service-worker.js"), "utf8").trim(),
-      'importScripts("protocol.js", "background.js");'
+      'importScripts("protocol.js", "popup/locales.js", "background.js");'
     );
+    assert.ok(fs.existsSync(path.join(outputRoot, "firefox", "popup", "locales.js")));
+    assert.ok(fs.existsSync(path.join(outputRoot, "chromium", "popup", "locales.js")));
   } finally {
     fs.rmSync(outputRoot, { recursive: true, force: true });
   }

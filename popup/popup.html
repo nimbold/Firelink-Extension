@@ -15,24 +15,23 @@
           <span class="status-text">Checking connection...</span>
         </div>
       </div>
-      <button class="theme-toggle-btn" id="theme-toggle" aria-label="Toggle Theme">
-        <!-- Moon Icon -->
-        <svg id="moon-icon" viewBox="0 0 24 24" style="display: none;">
-          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
-        </svg>
-        <!-- Sun Icon -->
-        <svg id="sun-icon" viewBox="0 0 24 24" style="display: none;">
-          <circle cx="12" cy="12" r="5"></circle>
-          <line x1="12" y1="1" x2="12" y2="3"></line>
-          <line x1="12" y1="21" x2="12" y2="23"></line>
-          <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
-          <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
-          <line x1="1" y1="12" x2="3" y2="12"></line>
-          <line x1="21" y1="12" x2="23" y2="12"></line>
-          <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
-          <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+      <button class="settings-toggle-btn" id="settings-toggle" type="button" aria-expanded="false" aria-controls="settings-panel">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z"></path>
+          <path d="m19.4 15 .1.1a1.9 1.9 0 0 1-2.7 2.7l-.1-.1a1.9 1.9 0 0 0-3.2 1.4v.2a1.9 1.9 0 0 1-3.8 0v-.2a1.9 1.9 0 0 0-3.2-1.4l-.1.1a1.9 1.9 0 1 1-2.7-2.7l.1-.1A1.9 1.9 0 0 0 2.5 12a1.9 1.9 0 0 1 0-3.8h.2a1.9 1.9 0 0 0 1.4-3.2L4 4.9a1.9 1.9 0 1 1 2.7-2.7l.1.1A1.9 1.9 0 0 0 10 1a1.9 1.9 0 0 1 3.8 0v.2a1.9 1.9 0 0 0 3.2 1.4l.1-.1a1.9 1.9 0 1 1 2.7 2.7l-.1.1A1.9 1.9 0 0 0 21 8.2h.2a1.9 1.9 0 0 1 0 3.8H21a1.9 1.9 0 0 0-1.6 3Z"></path>
         </svg>
       </button>
+    </div>
+
+    <div class="settings-panel" id="settings-panel" hidden>
+      <label class="select-row" for="language-select">
+        <span class="select-label" id="language-label">Language</span>
+        <select id="language-select"></select>
+      </label>
+      <label class="select-row" for="theme-select">
+        <span class="select-label" id="theme-label">Theme</span>
+        <select id="theme-select"></select>
+      </label>
     </div>
   
   <div class="settings">
@@ -43,40 +42,42 @@
         </svg>
       </span>
       <span class="media-action-copy">
-        <span class="setting-title">Fetch media</span>
+        <span class="setting-title" id="fetch-media-label">Fetch media</span>
         <span class="setting-desc" id="media-status">Current tab</span>
       </span>
     </button>
 
     <div class="setting-row compact-row">
       <div class="setting-info">
-        <span class="setting-title">Capture downloads</span>
+        <span class="setting-title" id="capture-downloads-label">Capture downloads</span>
       </div>
       <label class="switch">
-        <input type="checkbox" id="global-toggle">
+        <input type="checkbox" id="global-toggle" aria-labelledby="capture-downloads-label">
         <span class="slider round"></span>
       </label>
     </div>
 
     <div class="setting-row compact-row" id="site-setting-row">
       <div class="setting-info">
-        <span class="setting-title">Disable on site</span>
+        <span class="setting-title" id="disable-on-site-label">Disable on site</span>
         <span class="setting-desc" id="current-hostname">...</span>
       </div>
       <label class="switch">
-        <input type="checkbox" id="site-toggle">
+        <input type="checkbox" id="site-toggle" aria-labelledby="disable-on-site-label current-hostname">
         <span class="slider round"></span>
       </label>
     </div>
 
     <div class="setting-row pairing-row" id="pairing-section">
-      <div class="pairing-header">
-        <div>
-          <span class="setting-title">Pairing token</span>
+      <button class="pairing-header" id="pairing-toggle-btn" type="button" aria-expanded="false" aria-controls="pairing-content">
+        <span class="pairing-header-copy">
+          <span class="setting-title" id="pairing-label">Pairing token</span>
           <span class="setting-desc" id="pairing-desc">Required for local handoff</span>
-        </div>
-        <button class="pairing-toggle-btn" id="pairing-toggle-btn" aria-label="Show or hide pairing token field">▲</button>
-      </div>
+        </span>
+        <svg class="pairing-chevron" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="m7 9 5 5 5-5"></path>
+        </svg>
+      </button>
 
       <div class="pairing-content" id="pairing-content">
         <input type="password" id="extension-token" placeholder="Paste token here..." autocomplete="off" autocapitalize="off" spellcheck="false">
@@ -87,6 +88,7 @@
 
   </div>
   <script src="../protocol.js"></script>
+  <script src="locales.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

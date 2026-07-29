@@ -1,1 +1,1 @@
-importScripts("protocol.js", "background.js");
+importScripts("protocol.js", "popup/locales.js", "background.js");

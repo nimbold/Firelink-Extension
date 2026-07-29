@@ -27,7 +27,7 @@
     "http://127.0.0.1:6422/*"
   ],
   "background": {
-    "scripts": ["protocol.js", "background.js"]
+    "scripts": ["protocol.js", "popup/locales.js", "background.js"]
   },
   "content_scripts": [
     {

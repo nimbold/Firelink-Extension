@@ -1,0 +1,487 @@
+const POPUP_LOCALES = Object.freeze({
+  en: {
+    direction: "ltr",
+    checkingConnection: "Checking connection...",
+    setupRequired: "Setup required",
+    pasteToken: "Paste the token from Firelink App",
+    appConnected: "App connected",
+    connectedSecurely: "Connected securely",
+    invalidToken: "Invalid token",
+    invalidTokenUpdate: "Invalid token. Please update.",
+    appClosed: "App closed",
+    tokenSavedOffline: "Token saved. App is offline.",
+    openWebPage: "Open a web page first",
+    currentTab: "Current tab",
+    sending: "Sending to Firelink...",
+    couldNotSend: "Could not send media page",
+    opened: "Opened in Firelink",
+    fetchMedia: "Fetch media",
+    captureDownloads: "Capture downloads",
+    disableOnSite: "Disable on site",
+    pairingToken: "Pairing token",
+    requiredLocalHandoff: "Required for local handoff",
+    settings: "Settings",
+    language: "Language",
+    theme: "Theme",
+    systemDefault: "System default",
+    languageNames: {
+      en: "English",
+      "zh-CN": "Simplified Chinese",
+      he: "Hebrew",
+      fa: "Persian",
+      uk: "Ukrainian",
+      ru: "Russian"
+    },
+    themes: {
+      system: "System",
+      light: "Light",
+      dark: "Dark",
+      dracula: "Dracula",
+      nord: "Nord"
+    },
+    save: "Save",
+    saved: "Saved!",
+    pasteTokenPlaceholder: "Paste token…",
+    showPairing: "Show pairing token field",
+    hidePairing: "Hide pairing token field",
+    contextMenu: {
+      downloadLink: "Download with Firelink",
+      downloadSelectedLinks: "Download selected links with Firelink",
+      fetchMedia: "Fetch media with Firelink"
+    },
+    notifications: {
+      notOpenedTitle: "Firelink Was Not Opened",
+      notOpenedCooldown: "Your browser could not open Firelink. Check protocol permission, open Firelink once, then retry.",
+      notOpenedPrompt: "Approve your browser's prompt to open Firelink. No download was added.",
+      handoffFailedTitle: "Firelink Handoff Failed",
+      handoffRejected: "Firelink opened but rejected a download request. No duplicate request was sent.",
+      updateTitle: "Firelink Update Required",
+      updateMessage: "Update the Firelink desktop app to use browser integration.",
+      connectionRejectedTitle: "Firelink Connection Rejected",
+      connectionRejectedMessage: "Your pairing token is invalid. Update it in the Firelink extension popup.",
+      notReady: "Firelink started but was not ready to accept the download.",
+      launchAttentionTitle: "Firelink Launch Needs Attention",
+      launchAttentionMessage: "Open Firelink manually and confirm your browser is allowed to open firelink links, then retry.",
+      rejected: "Firelink rejected the request. No download was added.",
+      unavailable: "Firelink is unavailable. No download was added.",
+      ambiguousTitle: "Firelink Handoff Needs Attention",
+      ambiguousMessage: "Firelink may have received this download. The original was left paused to prevent a duplicate.",
+      captureTitle: "Firelink Download Capture",
+      captureMessage: "Download automatically forwarded to Firelink.",
+      mediaTitle: "Firelink Media Fetch",
+      mediaOpenPage: "Open a normal web page, then try Fetch media again.",
+      mediaSent: "Media page sent to Firelink."
+    }
+  },
+  "zh-CN": {
+    direction: "ltr",
+    checkingConnection: "正在检查连接...",
+    setupRequired: "需要设置",
+    pasteToken: "粘贴 Firelink 应用中的令牌",
+    appConnected: "应用已连接",
+    connectedSecurely: "已安全连接",
+    invalidToken: "令牌无效",
+    invalidTokenUpdate: "令牌无效，请更新。",
+    appClosed: "应用已关闭",
+    tokenSavedOffline: "令牌已保存，应用处于离线状态。",
+    openWebPage: "请先打开网页",
+    currentTab: "当前标签页",
+    sending: "正在发送到 Firelink...",
+    couldNotSend: "无法发送媒体页面",
+    opened: "已在 Firelink 中打开",
+    fetchMedia: "获取媒体",
+    captureDownloads: "捕获下载",
+    disableOnSite: "在此网站禁用",
+    pairingToken: "配对令牌",
+    requiredLocalHandoff: "本地传输需要",
+    settings: "设置",
+    language: "语言",
+    theme: "主题",
+    systemDefault: "系统默认",
+    languageNames: {
+      en: "英语",
+      "zh-CN": "简体中文",
+      he: "希伯来语",
+      fa: "波斯语",
+      uk: "乌克兰语",
+      ru: "俄语"
+    },
+    themes: {
+      system: "系统",
+      light: "浅色",
+      dark: "深色",
+      dracula: "Dracula",
+      nord: "Nord"
+    },
+    save: "保存",
+    saved: "已保存！",
+    pasteTokenPlaceholder: "粘贴令牌…",
+    showPairing: "显示配对令牌字段",
+    hidePairing: "隐藏配对令牌字段",
+    contextMenu: {
+      downloadLink: "使用 Firelink 下载",
+      downloadSelectedLinks: "使用 Firelink 下载选中的链接",
+      fetchMedia: "使用 Firelink 获取媒体"
+    },
+    notifications: {
+      notOpenedTitle: "Firelink 未打开",
+      notOpenedCooldown: "浏览器无法打开 Firelink。请检查协议权限，先打开一次 Firelink，然后重试。",
+      notOpenedPrompt: "请在浏览器弹窗中批准打开 Firelink。未添加下载。",
+      handoffFailedTitle: "Firelink 传输失败",
+      handoffRejected: "Firelink 已打开，但拒绝了下载请求。为避免重复，未再次发送。",
+      updateTitle: "需要更新 Firelink",
+      updateMessage: "请更新 Firelink 桌面应用以使用浏览器集成。",
+      connectionRejectedTitle: "Firelink 连接被拒绝",
+      connectionRejectedMessage: "配对令牌无效。请在 Firelink 扩展弹窗中更新。",
+      notReady: "Firelink 已启动，但尚未准备好接收下载。",
+      launchAttentionTitle: "Firelink 启动需要处理",
+      launchAttentionMessage: "请手动打开 Firelink，并确认浏览器允许打开 firelink 链接，然后重试。",
+      rejected: "Firelink 拒绝了请求。未添加下载。",
+      unavailable: "Firelink 不可用。未添加下载。",
+      ambiguousTitle: "Firelink 传输需要注意",
+      ambiguousMessage: "Firelink 可能已收到此下载。为避免重复，原始下载保持暂停。",
+      captureTitle: "Firelink 下载捕获",
+      captureMessage: "下载已自动转发到 Firelink。",
+      mediaTitle: "Firelink 媒体获取",
+      mediaOpenPage: "请先打开普通网页，然后重试“获取媒体”。",
+      mediaSent: "媒体页面已发送到 Firelink。"
+    }
+  },
+  he: {
+    direction: "rtl",
+    checkingConnection: "בודק את החיבור...",
+    setupRequired: "נדרשת הגדרה",
+    pasteToken: "הדבק את האסימון מאפליקציית Firelink",
+    appConnected: "האפליקציה מחוברת",
+    connectedSecurely: "מחובר בצורה מאובטחת",
+    invalidToken: "אסימון לא תקין",
+    invalidTokenUpdate: "האסימון לא תקין. יש לעדכן אותו.",
+    appClosed: "האפליקציה סגורה",
+    tokenSavedOffline: "האסימון נשמר. האפליקציה במצב לא מקוון.",
+    openWebPage: "יש לפתוח דף אינטרנט תחילה",
+    currentTab: "הכרטיסייה הנוכחית",
+    sending: "שולח ל-Firelink...",
+    couldNotSend: "לא ניתן לשלוח את דף המדיה",
+    opened: "נפתח ב-Firelink",
+    fetchMedia: "אחזור מדיה",
+    captureDownloads: "לכידת הורדות",
+    disableOnSite: "השבתה באתר",
+    pairingToken: "אסימון צימוד",
+    requiredLocalHandoff: "נדרש להעברה מקומית",
+    settings: "הגדרות",
+    language: "שפה",
+    theme: "ערכת נושא",
+    systemDefault: "ברירת מחדל של המערכת",
+    languageNames: {
+      en: "אנגלית",
+      "zh-CN": "סינית מפושטת",
+      he: "עברית",
+      fa: "פרסית",
+      uk: "אוקראינית",
+      ru: "רוסית"
+    },
+    themes: {
+      system: "מערכת",
+      light: "בהירה",
+      dark: "כהה",
+      dracula: "Dracula",
+      nord: "Nord"
+    },
+    save: "שמירה",
+    saved: "נשמר!",
+    pasteTokenPlaceholder: "הדבק אסימון…",
+    showPairing: "הצג שדה אסימון צימוד",
+    hidePairing: "הסתר שדה אסימון צימוד",
+    contextMenu: {
+      downloadLink: "הורדה באמצעות Firelink",
+      downloadSelectedLinks: "הורדת הקישורים שנבחרו באמצעות Firelink",
+      fetchMedia: "אחזור מדיה באמצעות Firelink"
+    },
+    notifications: {
+      notOpenedTitle: "Firelink לא נפתח",
+      notOpenedCooldown: "הדפדפן לא הצליח לפתוח את Firelink. בדוק את הרשאת הפרוטוקול, פתח את Firelink פעם אחת ונסה שוב.",
+      notOpenedPrompt: "אשר בחלונית הדפדפן את פתיחת Firelink. לא נוספה הורדה.",
+      handoffFailedTitle: "העברת Firelink נכשלה",
+      handoffRejected: "Firelink נפתח אך דחה בקשת הורדה. לא נשלחה בקשה נוספת כדי למנוע כפילות.",
+      updateTitle: "נדרש עדכון ל-Firelink",
+      updateMessage: "עדכן את אפליקציית Firelink למחשב כדי להשתמש בשילוב עם הדפדפן.",
+      connectionRejectedTitle: "החיבור ל-Firelink נדחה",
+      connectionRejectedMessage: "אסימון הצימוד לא תקין. עדכן אותו בחלונית של תוסף Firelink.",
+      notReady: "Firelink הופעל אך עדיין לא היה מוכן לקבל את ההורדה.",
+      launchAttentionTitle: "נדרשת תשומת לב בהפעלת Firelink",
+      launchAttentionMessage: "פתח את Firelink ידנית ואשר לדפדפן לפתוח קישורי firelink, ואז נסה שוב.",
+      rejected: "Firelink דחה את הבקשה. לא נוספה הורדה.",
+      unavailable: "Firelink אינו זמין. לא נוספה הורדה.",
+      ambiguousTitle: "נדרשת תשומת לב בהעברת Firelink",
+      ambiguousMessage: "ייתכן ש-Firelink קיבל את ההורדה. ההורדה המקורית נשארה מושהית כדי למנוע כפילות.",
+      captureTitle: "לכידת הורדה ב-Firelink",
+      captureMessage: "ההורדה הועברה אוטומטית ל-Firelink.",
+      mediaTitle: "אחזור מדיה ב-Firelink",
+      mediaOpenPage: "פתח דף אינטרנט רגיל ונסה שוב את \"אחזור מדיה\".",
+      mediaSent: "דף המדיה נשלח ל-Firelink."
+    }
+  },
+  fa: {
+    direction: "rtl",
+    checkingConnection: "در حال بررسی اتصال...",
+    setupRequired: "راه‌اندازی لازم است",
+    pasteToken: "توکن را از برنامهٔ Firelink جای‌گذاری کنید",
+    appConnected: "برنامه متصل است",
+    connectedSecurely: "اتصال امن برقرار است",
+    invalidToken: "توکن نامعتبر است",
+    invalidTokenUpdate: "توکن نامعتبر است. آن را به‌روزرسانی کنید.",
+    appClosed: "برنامه بسته است",
+    tokenSavedOffline: "توکن ذخیره شد. برنامه آفلاین است.",
+    openWebPage: "ابتدا یک صفحهٔ وب باز کنید",
+    currentTab: "زبانهٔ فعلی",
+    sending: "در حال ارسال به Firelink...",
+    couldNotSend: "صفحهٔ رسانه ارسال نشد",
+    opened: "در Firelink باز شد",
+    fetchMedia: "دریافت رسانه",
+    captureDownloads: "گرفتن دانلودها",
+    disableOnSite: "غیرفعال‌سازی در سایت",
+    pairingToken: "توکن جفت‌شدن",
+    requiredLocalHandoff: "برای انتقال محلی لازم است",
+    settings: "تنظیمات",
+    language: "زبان",
+    theme: "ظاهر",
+    systemDefault: "پیش‌فرض سیستم",
+    languageNames: {
+      en: "انگلیسی",
+      "zh-CN": "چینی ساده‌شده",
+      he: "عبری",
+      fa: "فارسی",
+      uk: "اوکراینی",
+      ru: "روسی"
+    },
+    themes: {
+      system: "سیستم",
+      light: "روشن",
+      dark: "تیره",
+      dracula: "Dracula",
+      nord: "Nord"
+    },
+    save: "ذخیره",
+    saved: "ذخیره شد!",
+    pasteTokenPlaceholder: "جای‌گذاری توکن…",
+    showPairing: "نمایش فیلد توکن جفت‌شدن",
+    hidePairing: "پنهان‌کردن فیلد توکن جفت‌شدن",
+    contextMenu: {
+      downloadLink: "دانلود با Firelink",
+      downloadSelectedLinks: "دانلود پیوندهای انتخاب‌شده با Firelink",
+      fetchMedia: "دریافت رسانه با Firelink"
+    },
+    notifications: {
+      notOpenedTitle: "Firelink باز نشد",
+      notOpenedCooldown: "مرورگر نتوانست Firelink را باز کند. مجوز پروتکل را بررسی کنید، یک‌بار Firelink را باز کنید و دوباره تلاش کنید.",
+      notOpenedPrompt: "در پنجرهٔ مرورگر، بازکردن Firelink را تأیید کنید. دانلودی اضافه نشد.",
+      handoffFailedTitle: "انتقال به Firelink ناموفق بود",
+      handoffRejected: "Firelink باز شد اما درخواست دانلود را نپذیرفت. برای جلوگیری از تکرار، درخواست دوباره ارسال نشد.",
+      updateTitle: "به‌روزرسانی Firelink لازم است",
+      updateMessage: "برای استفاده از اتصال مرورگر، برنامهٔ دسکتاپ Firelink را به‌روزرسانی کنید.",
+      connectionRejectedTitle: "اتصال Firelink رد شد",
+      connectionRejectedMessage: "توکن جفت‌شدن نامعتبر است. آن را در پنجرهٔ افزونهٔ Firelink به‌روزرسانی کنید.",
+      notReady: "Firelink شروع شد، اما هنوز آمادهٔ دریافت دانلود نبود.",
+      launchAttentionTitle: "راه‌اندازی Firelink نیاز به بررسی دارد",
+      launchAttentionMessage: "Firelink را دستی باز کنید و مطمئن شوید مرورگر اجازهٔ بازکردن پیوندهای firelink را دارد، سپس دوباره تلاش کنید.",
+      rejected: "Firelink درخواست را رد کرد. دانلودی اضافه نشد.",
+      unavailable: "Firelink در دسترس نیست. دانلودی اضافه نشد.",
+      ambiguousTitle: "انتقال به Firelink نیاز به بررسی دارد",
+      ambiguousMessage: "ممکن است Firelink این دانلود را دریافت کرده باشد. برای جلوگیری از تکرار، دانلود اصلی متوقف نگه داشته شد.",
+      captureTitle: "رهگیری دانلود در Firelink",
+      captureMessage: "دانلود به‌صورت خودکار به Firelink فرستاده شد.",
+      mediaTitle: "دریافت رسانه در Firelink",
+      mediaOpenPage: "ابتدا یک صفحهٔ وب معمولی باز کنید و سپس دوباره «دریافت رسانه» را امتحان کنید.",
+      mediaSent: "صفحهٔ رسانه به Firelink فرستاده شد."
+    }
+  },
+  uk: {
+    direction: "ltr",
+    checkingConnection: "Перевірка з’єднання...",
+    setupRequired: "Потрібне налаштування",
+    pasteToken: "Вставте токен із програми Firelink",
+    appConnected: "Програму підключено",
+    connectedSecurely: "Безпечне з’єднання встановлено",
+    invalidToken: "Недійсний токен",
+    invalidTokenUpdate: "Токен недійсний. Оновіть його.",
+    appClosed: "Програму закрито",
+    tokenSavedOffline: "Токен збережено. Програма не в мережі.",
+    openWebPage: "Спочатку відкрийте вебсторінку",
+    currentTab: "Поточна вкладка",
+    sending: "Надсилання до Firelink...",
+    couldNotSend: "Не вдалося надіслати медіасторінку",
+    opened: "Відкрито у Firelink",
+    fetchMedia: "Отримати медіа",
+    captureDownloads: "Перехоплювати завантаження",
+    disableOnSite: "Вимкнути на сайті",
+    pairingToken: "Токен сполучення",
+    requiredLocalHandoff: "Потрібен для локальної передачі",
+    settings: "Налаштування",
+    language: "Мова",
+    theme: "Тема",
+    systemDefault: "Системна",
+    languageNames: {
+      en: "Англійська",
+      "zh-CN": "Спрощена китайська",
+      he: "Іврит",
+      fa: "Перська",
+      uk: "Українська",
+      ru: "Російська"
+    },
+    themes: {
+      system: "Системна",
+      light: "Світла",
+      dark: "Темна",
+      dracula: "Dracula",
+      nord: "Nord"
+    },
+    save: "Зберегти",
+    saved: "Збережено!",
+    pasteTokenPlaceholder: "Вставте токен…",
+    showPairing: "Показати поле токена сполучення",
+    hidePairing: "Сховати поле токена сполучення",
+    contextMenu: {
+      downloadLink: "Завантажити через Firelink",
+      downloadSelectedLinks: "Завантажити вибрані посилання через Firelink",
+      fetchMedia: "Отримати медіа через Firelink"
+    },
+    notifications: {
+      notOpenedTitle: "Firelink не відкрито",
+      notOpenedCooldown: "Браузеру не вдалося відкрити Firelink. Перевірте дозвіл протоколу, один раз відкрийте Firelink і повторіть спробу.",
+      notOpenedPrompt: "Підтвердьте у вікні браузера відкриття Firelink. Завантаження не додано.",
+      handoffFailedTitle: "Не вдалося передати до Firelink",
+      handoffRejected: "Firelink відкрився, але відхилив запит на завантаження. Повторний запит не надсилався, щоб уникнути дублювання.",
+      updateTitle: "Потрібно оновити Firelink",
+      updateMessage: "Оновіть настільну програму Firelink, щоб використовувати інтеграцію з браузером.",
+      connectionRejectedTitle: "З’єднання з Firelink відхилено",
+      connectionRejectedMessage: "Токен сполучення недійсний. Оновіть його у вікні розширення Firelink.",
+      notReady: "Firelink запущено, але він ще не готовий приймати завантаження.",
+      launchAttentionTitle: "Потрібна увага до запуску Firelink",
+      launchAttentionMessage: "Відкрийте Firelink вручну, дозвольте браузеру відкривати посилання firelink і повторіть спробу.",
+      rejected: "Firelink відхилив запит. Завантаження не додано.",
+      unavailable: "Firelink недоступний. Завантаження не додано.",
+      ambiguousTitle: "Потрібна увага до передачі Firelink",
+      ambiguousMessage: "Можливо, Firelink отримав це завантаження. Оригінальне завантаження залишено призупиненим, щоб уникнути дублювання.",
+      captureTitle: "Перехоплення завантаження Firelink",
+      captureMessage: "Завантаження автоматично передано до Firelink.",
+      mediaTitle: "Отримання медіа Firelink",
+      mediaOpenPage: "Відкрийте звичайну вебсторінку й повторіть спробу «Отримати медіа».",
+      mediaSent: "Медіасторінку надіслано до Firelink."
+    }
+  },
+  ru: {
+    direction: "ltr",
+    checkingConnection: "Проверка подключения...",
+    setupRequired: "Требуется настройка",
+    pasteToken: "Вставьте токен из приложения Firelink",
+    appConnected: "Приложение подключено",
+    connectedSecurely: "Безопасное подключение установлено",
+    invalidToken: "Недействительный токен",
+    invalidTokenUpdate: "Токен недействителен. Обновите его.",
+    appClosed: "Приложение закрыто",
+    tokenSavedOffline: "Токен сохранён. Приложение не в сети.",
+    openWebPage: "Сначала откройте веб-страницу",
+    currentTab: "Текущая вкладка",
+    sending: "Отправка в Firelink...",
+    couldNotSend: "Не удалось отправить страницу с медиа",
+    opened: "Открыто в Firelink",
+    fetchMedia: "Получить медиа",
+    captureDownloads: "Перехватывать загрузки",
+    disableOnSite: "Отключить на сайте",
+    pairingToken: "Токен сопряжения",
+    requiredLocalHandoff: "Нужен для локальной передачи",
+    settings: "Настройки",
+    language: "Язык",
+    theme: "Тема",
+    systemDefault: "Системный",
+    languageNames: {
+      en: "Английский",
+      "zh-CN": "Упрощённый китайский",
+      he: "Иврит",
+      fa: "Персидский",
+      uk: "Украинский",
+      ru: "Русский"
+    },
+    themes: {
+      system: "Системная",
+      light: "Светлая",
+      dark: "Тёмная",
+      dracula: "Dracula",
+      nord: "Nord"
+    },
+    save: "Сохранить",
+    saved: "Сохранено!",
+    pasteTokenPlaceholder: "Вставьте токен…",
+    showPairing: "Показать поле токена сопряжения",
+    hidePairing: "Скрыть поле токена сопряжения",
+    contextMenu: {
+      downloadLink: "Скачать через Firelink",
+      downloadSelectedLinks: "Скачать выбранные ссылки через Firelink",
+      fetchMedia: "Получить медиа через Firelink"
+    },
+    notifications: {
+      notOpenedTitle: "Firelink не открыт",
+      notOpenedCooldown: "Браузер не смог открыть Firelink. Проверьте разрешение протокола, один раз откройте Firelink и повторите попытку.",
+      notOpenedPrompt: "Разрешите открыть Firelink в запросе браузера. Загрузка не добавлена.",
+      handoffFailedTitle: "Не удалось передать в Firelink",
+      handoffRejected: "Firelink открылся, но отклонил запрос на загрузку. Повторный запрос не отправлялся, чтобы избежать дубликата.",
+      updateTitle: "Требуется обновление Firelink",
+      updateMessage: "Обновите настольное приложение Firelink, чтобы использовать интеграцию с браузером.",
+      connectionRejectedTitle: "Соединение с Firelink отклонено",
+      connectionRejectedMessage: "Токен сопряжения недействителен. Обновите его во всплывающем окне расширения Firelink.",
+      notReady: "Firelink запущен, но ещё не готов принять загрузку.",
+      launchAttentionTitle: "Требуется проверить запуск Firelink",
+      launchAttentionMessage: "Откройте Firelink вручную, разрешите браузеру открывать ссылки firelink и повторите попытку.",
+      rejected: "Firelink отклонил запрос. Загрузка не добавлена.",
+      unavailable: "Firelink недоступен. Загрузка не добавлена.",
+      ambiguousTitle: "Требуется проверить передачу в Firelink",
+      ambiguousMessage: "Возможно, Firelink уже получил эту загрузку. Исходная загрузка оставлена на паузе, чтобы избежать дубликата.",
+      captureTitle: "Перехват загрузки Firelink",
+      captureMessage: "Загрузка автоматически передана в Firelink.",
+      mediaTitle: "Получение медиа в Firelink",
+      mediaOpenPage: "Сначала откройте обычную веб-страницу, затем повторите попытку «Получить медиа».",
+      mediaSent: "Страница с медиа отправлена в Firelink."
+    }
+  }
+});
+
+const POPUP_LOCALE_CODES = Object.freeze(["en", "zh-CN", "he", "fa", "uk", "ru"]);
+const POPUP_LANGUAGE_PREFERENCES = Object.freeze(["system", ...POPUP_LOCALE_CODES]);
+const POPUP_THEMES = Object.freeze(["system", "light", "dark", "dracula", "nord"]);
+
+function resolvePopupLocale(value) {
+  const normalized = typeof value === "string"
+    ? value.trim().replace(/_/g, "-").toLowerCase()
+    : "";
+
+  if (normalized === "zh" || normalized.startsWith("zh-")) return "zh-CN";
+  if (normalized === "he" || normalized.startsWith("he-") || normalized === "iw" || normalized.startsWith("iw-")) return "he";
+  if (normalized === "fa" || normalized.startsWith("fa-")) return "fa";
+  if (normalized === "uk" || normalized.startsWith("uk-")) return "uk";
+  if (normalized === "ru" || normalized.startsWith("ru-")) return "ru";
+  return "en";
+}
+
+function normalizePopupLanguagePreference(value) {
+  return POPUP_LANGUAGE_PREFERENCES.includes(value) ? value : "system";
+}
+
+function normalizePopupTheme(value) {
+  return POPUP_THEMES.includes(value) ? value : "system";
+}
+
+const popupI18n = {
+  catalogs: POPUP_LOCALES,
+  localeCodes: POPUP_LOCALE_CODES,
+  languagePreferences: POPUP_LANGUAGE_PREFERENCES,
+  themes: POPUP_THEMES,
+  resolveLocale: resolvePopupLocale,
+  normalizeLanguagePreference: normalizePopupLanguagePreference,
+  normalizeTheme: normalizePopupTheme
+};
+
+globalThis.FirelinkPopupI18n = popupI18n;
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = popupI18n;
+}

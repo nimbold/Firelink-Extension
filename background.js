@@ -5,6 +5,7 @@ const defaultSettings = {
   globalCapture: true,
   siteToggles: {},
   extensionToken: "",
+  language: "system",
   launchTimeoutCount: 0,
   launchCooldownUntil: 0
 };
@@ -31,6 +32,7 @@ const SETTINGS_KEYS = [
   "globalCapture",
   "siteToggles",
   "extensionToken",
+  "language",
   "launchTimeoutCount",
   "launchCooldownUntil"
 ];
@@ -62,6 +64,9 @@ const settingsLoaded = new Promise(resolve => {
     }
     if (result.extensionToken !== undefined && !settingsChangedDuringLoad.has("extensionToken")) {
       cachedSettings.extensionToken = result.extensionToken;
+    }
+    if (result.language !== undefined && !settingsChangedDuringLoad.has("language")) {
+      cachedSettings.language = result.language;
     }
     if (result.launchTimeoutCount !== undefined && !settingsChangedDuringLoad.has("launchTimeoutCount")) {
       cachedSettings.launchTimeoutCount = result.launchTimeoutCount;
@@ -95,12 +100,77 @@ chrome.storage.onChanged.addListener((changes, area) => {
     if (CAPTURE_POLICY_KEYS.has(key)) {
       capturePolicyRevision += 1;
     }
+    if (key === "language") {
+      void registerContextMenus();
+    }
   }
 });
 
+function currentBackgroundCatalog() {
+  const i18n = globalThis.FirelinkPopupI18n;
+  if (!i18n?.catalogs) {
+    return {};
+  }
+
+  const preference = i18n.normalizeLanguagePreference(cachedSettings.language);
+  const locale = preference === "system"
+    ? i18n.resolveLocale(navigator.language)
+    : preference;
+  return i18n.catalogs[locale] || i18n.catalogs.en || {};
+}
+
+function backgroundText(section, key, fallback) {
+  return currentBackgroundCatalog()[section]?.[key] || fallback;
+}
+
+let contextMenuRegistration = Promise.resolve();
+
+function registerContextMenus() {
+  contextMenuRegistration = contextMenuRegistration
+    .catch(() => {})
+    .then(() => new Promise(resolve => {
+      if (!chrome.contextMenus?.removeAll || !chrome.contextMenus?.create) {
+        resolve();
+        return;
+      }
+
+      chrome.contextMenus.removeAll(() => {
+        const contextMenu = currentBackgroundCatalog().contextMenu || {};
+        const items = [
+          {
+            id: "download-with-firelink",
+            title: contextMenu.downloadLink || "Download with Firelink",
+            contexts: ["link"]
+          },
+          {
+            id: "download-selected-with-firelink",
+            title: contextMenu.downloadSelectedLinks || "Download selected links with Firelink",
+            contexts: ["selection"]
+          },
+          {
+            id: "fetch-media-with-firelink",
+            title: contextMenu.fetchMedia || "Fetch media with Firelink",
+            contexts: ["page", "video", "audio"]
+          }
+        ];
+        for (const item of items) {
+          try {
+            chrome.contextMenus.create(item);
+          } catch (error) {
+            console.error("Firelink context menu registration failed:", error);
+          }
+        }
+        resolve();
+      });
+    }));
+  return contextMenuRegistration;
+}
+
+void settingsLoaded.then(registerContextMenus);
+
 chrome.runtime.onInstalled.addListener(() => {
   chrome.storage.local.get(
-    ["globalCapture", "siteToggles", "extensionToken", "launchTimeoutCount", "launchCooldownUntil"],
+    SETTINGS_KEYS,
     result => {
       result = result && typeof result === "object" ? result : {};
       const missingSettings = {};
@@ -114,24 +184,7 @@ chrome.runtime.onInstalled.addListener(() => {
       }
     }
   );
-
-  chrome.contextMenus.removeAll(() => {
-    chrome.contextMenus.create({
-      id: "download-with-firelink",
-      title: "Download with Firelink",
-      contexts: ["link"]
-    });
-    chrome.contextMenus.create({
-      id: "download-selected-with-firelink",
-      title: "Download selected with Firelink",
-      contexts: ["selection"]
-    });
-    chrome.contextMenus.create({
-      id: "fetch-media-with-firelink",
-      title: "Fetch media with Firelink",
-      contexts: ["page", "video", "audio"]
-    });
-  });
+  void settingsLoaded.then(registerContextMenus);
 });
 
 function normalizeURL(rawURL) {
@@ -564,15 +617,30 @@ async function runLaunchSession(session) {
         : 0;
       storeLaunchState(timeoutCount, cooldownUntil);
       notify(
-        "Firelink Was Not Opened",
+        backgroundText("notifications", "notOpenedTitle", "Firelink Was Not Opened"),
         cooldownUntil
-          ? "Your browser could not open Firelink. Check protocol permission, open Firelink once, then retry."
-          : "Approve your browser's prompt to open Firelink. No download was added."
+          ? backgroundText(
+            "notifications",
+            "notOpenedCooldown",
+            "Your browser could not open Firelink. Check protocol permission, open Firelink once, then retry."
+          )
+          : backgroundText(
+            "notifications",
+            "notOpenedPrompt",
+            "Approve your browser's prompt to open Firelink. No download was added."
+          )
       );
     } else {
       storeLaunchState(0, 0);
       if (deliveryFailed) {
-        notify("Firelink Handoff Failed", "Firelink opened but rejected a download request. No duplicate request was sent.");
+        notify(
+          backgroundText("notifications", "handoffFailedTitle", "Firelink Handoff Failed"),
+          backgroundText(
+            "notifications",
+            "handoffRejected",
+            "Firelink opened but rejected a download request. No duplicate request was sent."
+          )
+        );
       }
     }
     session.entries.forEach(entry => entry.resolve(entry.result === true));
@@ -720,7 +788,14 @@ async function sendToFirelink(urls, referer = "", options = {}) {
 
   if (!cachedSettings.extensionToken) {
     if (notifyOnFailure) {
-        notify("Firelink Setup Required", "Please click the Firelink extension icon and paste the pairing token.");
+      notify(
+        backgroundText("notifications", "setupTitle", "Firelink Setup Required"),
+        backgroundText(
+          "notifications",
+          "setupMessage",
+          "Please click the Firelink extension icon and paste the pairing token."
+        )
+      );
     }
     return false;
   }
@@ -770,8 +845,12 @@ async function sendToFirelink(urls, referer = "", options = {}) {
         chrome.notifications.create({
           type: "basic",
           iconUrl: "icons/icon-128.png",
-          title: "Firelink Update Required",
-          message: "Update the Firelink desktop app to use browser integration."
+          title: backgroundText("notifications", "updateTitle", "Firelink Update Required"),
+          message: backgroundText(
+            "notifications",
+            "updateMessage",
+            "Update the Firelink desktop app to use browser integration."
+          )
         });
       }
       return false;
@@ -779,7 +858,14 @@ async function sendToFirelink(urls, referer = "", options = {}) {
 
     if (error.serverReached && error.status === 403) {
       if (notifyOnFailure) {
-        notify("Firelink Connection Rejected", "Your pairing token is invalid. Update it in the Firelink extension popup.");
+        notify(
+          backgroundText("notifications", "connectionRejectedTitle", "Firelink Connection Rejected"),
+          backgroundText(
+            "notifications",
+            "connectionRejectedMessage",
+            "Your pairing token is invalid. Update it in the Firelink extension popup."
+          )
+        );
       }
       return false;
     }
@@ -793,7 +879,14 @@ async function sendToFirelink(urls, referer = "", options = {}) {
       } catch (retryError) {
         reportAmbiguousHandoff(options, retryError);
         if (notifyOnFailure) {
-          notify("Firelink Handoff Failed", "Firelink started but was not ready to accept the download.");
+          notify(
+            backgroundText("notifications", "handoffFailedTitle", "Firelink Handoff Failed"),
+            backgroundText(
+              "notifications",
+              "notReady",
+              "Firelink started but was not ready to accept the download."
+            )
+          );
         }
         return false;
       }
@@ -806,8 +899,12 @@ async function sendToFirelink(urls, referer = "", options = {}) {
       if ((cachedSettings.launchCooldownUntil || 0) > Date.now()) {
         if (notifyOnFailure) {
           notify(
-            "Firelink Launch Needs Attention",
-            "Open Firelink manually and confirm your browser is allowed to open firelink links, then retry."
+            backgroundText("notifications", "launchAttentionTitle", "Firelink Launch Needs Attention"),
+            backgroundText(
+              "notifications",
+              "launchAttentionMessage",
+              "Open Firelink manually and confirm your browser is allowed to open firelink links, then retry."
+            )
           );
         }
         return false;
@@ -824,10 +921,18 @@ async function sendToFirelink(urls, referer = "", options = {}) {
 
     if (notifyOnFailure) {
       notify(
-        "Firelink Handoff Failed",
+        backgroundText("notifications", "handoffFailedTitle", "Firelink Handoff Failed"),
         error.serverReached
-          ? "Firelink rejected the request. No download was added."
-          : "Firelink is unavailable. No download was added."
+          ? backgroundText(
+            "notifications",
+            "rejected",
+            "Firelink rejected the request. No download was added."
+          )
+          : backgroundText(
+            "notifications",
+            "unavailable",
+            "Firelink is unavailable. No download was added."
+          )
       );
     }
     return false;
@@ -838,8 +943,12 @@ function notifyAmbiguousAutomaticCapture() {
   chrome.notifications.create({
     type: "basic",
     iconUrl: "icons/icon-128.png",
-    title: "Firelink Handoff Needs Attention",
-    message: "Firelink may have received this download. The original was left paused to prevent a duplicate."
+    title: backgroundText("notifications", "ambiguousTitle", "Firelink Handoff Needs Attention"),
+    message: backgroundText(
+      "notifications",
+      "ambiguousMessage",
+      "Firelink may have received this download. The original was left paused to prevent a duplicate."
+    )
   });
 }
 
@@ -939,8 +1048,12 @@ async function handleAutomaticCapture(downloadItem, filenameWait, pendingRecord 
     chrome.notifications.create({
       type: "basic",
       iconUrl: "icons/icon-128.png",
-      title: "Firelink Download Capture",
-      message: "Download automatically forwarded to Firelink."
+      title: backgroundText("notifications", "captureTitle", "Firelink Download Capture"),
+      message: backgroundText(
+        "notifications",
+        "captureMessage",
+        "Download automatically forwarded to Firelink."
+      )
     });
   } finally {
     activeAutomaticCaptures.delete(record.id);
@@ -1020,7 +1133,14 @@ async function fetchMediaForTab(tab, options = {}) {
   const pageURL = normalizePageMediaURL(tab?.url) || normalizePageMediaURL(options.srcUrl);
   if (!pageURL) {
     if (options.notifyOnFailure !== false) {
-      notify("Firelink Media Fetch", "Open a normal web page, then try Fetch media again.");
+      notify(
+        backgroundText("notifications", "mediaTitle", "Firelink Media Fetch"),
+        backgroundText(
+          "notifications",
+          "mediaOpenPage",
+          "Open a normal web page, then try Fetch media again."
+        )
+      );
     }
     return false;
   }
@@ -1038,7 +1158,10 @@ async function fetchMediaForTab(tab, options = {}) {
   });
 
   if (accepted && options.notifyOnSuccess === true) {
-    notify("Firelink Media Fetch", "Media page sent to Firelink.");
+    notify(
+      backgroundText("notifications", "mediaTitle", "Firelink Media Fetch"),
+      backgroundText("notifications", "mediaSent", "Media page sent to Firelink.")
+    );
   }
 
   return accepted;

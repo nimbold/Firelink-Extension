@@ -45,6 +45,8 @@ After installation:
 - Batch selected links from page context menus.
 - Optional Firelink folders named from page titles.
 - Explicit **Fetch media** actions from the popup and context menu.
+- Localized popup UI in Firelink's six supported languages, including RTL layout for Hebrew and Persian.
+- System, light, dark, Dracula, and Nord popup themes.
 - Firefox and Chromium Manifest V3 support.
 - Signed local requests with HMAC-SHA256.
 - Desktop identity checks before trusting localhost responses.

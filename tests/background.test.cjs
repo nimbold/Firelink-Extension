@@ -8,6 +8,10 @@ const backgroundSource = fs.readFileSync(
   path.join(__dirname, "..", "background.js"),
   "utf8"
 );
+const localesSource = fs.readFileSync(
+  path.join(__dirname, "..", "popup", "locales.js"),
+  "utf8"
+);
 
 function createBackgroundContext(signedFetch, options = {}) {
   const createdTabs = [];
@@ -24,14 +28,16 @@ function createBackgroundContext(signedFetch, options = {}) {
   const deferredStorageCallbacks = [];
   let deferredStorageGetCount = 0;
   let persistedPendingCaptures = options.pendingCaptures || {};
-  const noopEvent = { addListener() {} };
   const chrome = {
     contextMenus: {
       onClicked: {
         addListener(listener) { listeners.contextMenu = listener; }
       },
       create(item) { contextMenuItems.push(item); },
-      removeAll(callback) { callback(); }
+      removeAll(callback) {
+        contextMenuItems.length = 0;
+        callback?.();
+      }
     },
     cookies: {
       getAll(details, callback) {
@@ -86,7 +92,9 @@ function createBackgroundContext(signedFetch, options = {}) {
     },
     runtime: {
       lastError: null,
-      onInstalled: noopEvent,
+      onInstalled: {
+        addListener(listener) { listeners.installed = listener; }
+      },
       onMessage: {
         addListener(listener) { listeners.message = listener; }
       }
@@ -191,11 +199,15 @@ function createBackgroundContext(signedFetch, options = {}) {
     URL,
     chrome,
     console,
-    navigator: { userAgent: "Firefox Test" },
+    navigator: {
+      userAgent: "Firefox Test",
+      language: options.language || "en-US"
+    },
     setTimeout: options.setTimeout || setTimeout,
     clearTimeout: options.clearTimeout || clearTimeout,
     Date: options.Date || Date
   });
+  vm.runInContext(localesSource, context);
   vm.runInContext(backgroundSource, context);
   return {
     context,
@@ -217,6 +229,57 @@ test("starts without unsupported Firefox notification button APIs", () => {
   const fixture = createBackgroundContext(async () => ({ ok: true }));
   assert.equal(typeof fixture.listeners.contextMenu, "function");
   assert.equal(typeof fixture.listeners.downloadCreated, "function");
+});
+
+test("localizes and refreshes IDM-style browser context menus", async () => {
+  const fixture = createBackgroundContext(async () => ({ ok: true }), {
+    language: "fa-IR",
+    settings: { language: "fa" }
+  });
+  await new Promise(resolve => setTimeout(resolve, 0));
+
+  assert.deepEqual(
+    fixture.contextMenuItems.map(item => item.title),
+    [
+      "دانلود با Firelink",
+      "دانلود پیوندهای انتخاب‌شده با Firelink",
+      "دریافت رسانه با Firelink"
+    ]
+  );
+
+  fixture.listeners.storageChanged({ language: { newValue: "ru" } }, "local");
+  fixture.listeners.storageChanged({ language: { newValue: "uk" } }, "local");
+  await new Promise(resolve => setTimeout(resolve, 0));
+
+  assert.deepEqual(
+    fixture.contextMenuItems.map(item => item.title),
+    [
+      "Завантажити через Firelink",
+      "Завантажити вибрані посилання через Firelink",
+      "Отримати медіа через Firelink"
+    ]
+  );
+});
+
+test("localizes background notifications from the selected popup language", async () => {
+  const fixture = createBackgroundContext(
+    async () => {
+      throw { serverReached: true, status: 403 };
+    },
+    { settings: { language: "he" } }
+  );
+
+  const accepted = await vm.runInContext(
+    'sendToFirelink(["https://example.com/file.zip"])',
+    fixture.context
+  );
+
+  assert.equal(accepted, false);
+  assert.equal(fixture.createdNotifications[0][0].title, "החיבור ל-Firelink נדחה");
+  assert.equal(
+    fixture.createdNotifications[0][0].message,
+    "אסימון הצימוד לא תקין. עדכן אותו בחלונית של תוסף Firelink."
+  );
 });
 
 test("successful direct handoff does not open a protocol tab", async () => {
