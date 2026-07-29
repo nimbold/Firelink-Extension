@@ -20,7 +20,7 @@ Captured links open Firelink's Add window first. You can review them before star
 
 ## Status
 
-The current Companion release is `2.0.6`. It is compatible with Firelink `1.2.0`.
+The current Companion release is [**2.1.0**](https://github.com/nimbold/Firelink-Extension/releases/tag/v2.1.0). It is compatible with [Firelink `1.3.0`](https://github.com/nimbold/Firelink/releases/tag/v1.3.0).
 
 The project is actively maintained. Use the latest Companion release with the latest Firelink release.
 
@@ -46,12 +46,14 @@ After installation:
 - Optional Firelink folders named from page titles.
 - Explicit **Fetch media** actions from the popup and context menu.
 - Localized popup UI in Firelink's six supported languages, including RTL layout for Hebrew and Persian.
+- Localized browser context menus that follow the selected language.
 - System, light, dark, Dracula, and Nord popup themes.
 - Firefox and Chromium Manifest V3 support.
 - Signed local requests with HMAC-SHA256.
 - Desktop identity checks before trusting localhost responses.
 - Safe fallback when Firelink is closed or rejects a handoff.
 - Recovery for interrupted or ambiguous captures without silent duplicates.
+- Safer popup state and automatic-capture handling when settings change during a handoff.
 - Dynamic local port discovery across `127.0.0.1:6412-6422`.
 
 ## Handoff and privacy

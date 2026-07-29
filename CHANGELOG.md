@@ -2,6 +2,26 @@
 
 All notable changes to Firelink Companion will be documented in this file.
 
+## [2.1.0] - 2026-07-29
+
+This release pairs with [Firelink 1.3.0](https://github.com/nimbold/Firelink/releases/tag/v1.3.0) and makes the browser companion easier to understand and safer during automatic captures.
+
+### New features
+
+- **Localized browser menus and popup text** for Firelink's supported languages, including right-to-left layouts for Hebrew and Persian.
+- Clearer popup states for setup, connection, capture, and update situations.
+
+### Improvements
+
+- Keep automatic captures from being interrupted when a site is disabled or capture settings change while a handoff is in progress, addressing [Firelink #28](https://github.com/nimbold/Firelink/issues/28).
+- Make service-worker restarts and changing popup settings less likely to leave a browser download paused or in an unclear state.
+- Improve menu, popup, and handoff feedback so failed actions explain what happened instead of failing silently.
+
+### Fixes
+
+- Avoid pausing disabled Firefox downloads before the extension has confirmed that it should handle them.
+- Keep automatic-capture state tied to the correct browser download while settings, popup state, or worker lifecycle changes.
+
 ## [2.0.6] - 2026-07-22
 
 This patch release makes browser captures safer during startup, restarts, and multiple simultaneous handoffs.
