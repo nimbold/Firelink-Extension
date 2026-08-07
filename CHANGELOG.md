@@ -2,6 +2,19 @@
 
 All notable changes to Firelink Companion will be documented in this file.
 
+## [Unreleased]
+
+### New features
+
+- Add magnet links to the existing Firefox and Chromium link and selection context menus.
+- Hand `.torrent` downloads to Firelink's Add window after the browser filename settles, including remote URLs whose path is opaque.
+- Require the Firelink torrent handoff protocol so older desktop versions cannot treat torrent captures as ordinary downloads.
+
+### Improvements
+
+- Keep browser torrent downloads paused until Firelink acknowledges receipt, and recover or retain them safely when delivery fails or is ambiguous.
+- Preserve authenticated browser headers, cookies, and cookie scopes for remote torrent metadata.
+
 ## [2.1.0] - 2026-07-29
 
 This release pairs with [Firelink 1.3.0](https://github.com/nimbold/Firelink/releases/tag/v1.3.0) and makes the browser companion easier to understand and safer during automatic captures.

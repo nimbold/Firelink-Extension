@@ -1,5 +1,5 @@
 (() => {
-  const allowedSchemes = new Set(["http:", "https:", "ftp:", "sftp:"]);
+  const allowedSchemes = new Set(["http:", "https:", "ftp:", "sftp:", "magnet:"]);
 
   function normalizedDownloadURL(rawURL) {
     try {

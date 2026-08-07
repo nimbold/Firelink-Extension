@@ -21,7 +21,7 @@ function serverProof(token, timestamp, nonce, port) {
 function firelinkResponseForRequest(url, options = {}, settings = {}) {
   const token = settings.token || "secret";
   const status = settings.status || 200;
-  const protocolVersion = settings.protocolVersion || 4;
+  const protocolVersion = settings.protocolVersion || 5;
   const port = Number(new URL(url).port);
   const proofPort = settings.proofPort || port;
   const timestamp = header(options, "X-Firelink-Timestamp");
@@ -71,6 +71,59 @@ test("uses desktop port range server identity headers", () => {
   assert.equal(PROTOCOL_VERSION, 4);
 });
 
+test("keeps ordinary downloads compatible with the protocol 4 desktop", async () => {
+  const originalFetch = global.fetch;
+  const { signedFetch } = loadProtocol();
+
+  global.fetch = async (url, options = {}) => firelinkResponseForRequest(
+    url,
+    options,
+    { protocolVersion: 4 }
+  );
+
+  try {
+    await assert.doesNotReject(() => signedFetch("/download", "secret", {
+      method: "POST",
+      requiredProtocolVersion: 3,
+      payload: { urls: ["https://example.com/file.zip"] }
+    }));
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("rejects a protocol 4 desktop before sending a torrent handoff", async () => {
+  const originalFetch = global.fetch;
+  const { signedFetch } = loadProtocol();
+  let downloadRequests = 0;
+
+  global.fetch = async (url, options = {}) => {
+    if (url.endsWith("/download")) downloadRequests += 1;
+    return firelinkResponseForRequest(url, options, { protocolVersion: 4 });
+  };
+
+  try {
+    await assert.rejects(
+      () => signedFetch("/download", "secret", {
+        method: "POST",
+        requiredProtocolVersion: 5,
+        payload: {
+          urls: ["https://example.com/file.torrent"],
+          torrent: true
+        }
+      }),
+      error => {
+        assert.equal(error.status, 426);
+        assert.equal(error.serverReached, true);
+        return true;
+      }
+    );
+    assert.equal(downloadRequests, 0);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test("preserves a desktop 403 as an invalid pairing token", async () => {
   const originalFetch = global.fetch;
   const { signedFetch } = loadProtocol();
@@ -79,7 +132,7 @@ test("preserves a desktop 403 as an invalid pairing token", async () => {
     status: 403,
     headers: {
       "X-Firelink-Server": "1",
-      "X-Firelink-Protocol-Version": "4"
+      "X-Firelink-Protocol-Version": "5"
     }
   });
 

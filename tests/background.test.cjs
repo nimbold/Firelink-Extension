@@ -960,7 +960,7 @@ test("automatic capture resumes when pending-state persistence fails", async () 
     filename: "/tmp/file.zip"
   });
 
-  assert.deepEqual(fixture.downloadActions, [
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.downloadActions)), [
     ["pause", 24],
     ["resume", 24]
   ]);
@@ -978,7 +978,7 @@ test("automatic capture resumes when a phase update cannot be persisted", async 
     filename: "/tmp/file.zip"
   });
 
-  assert.deepEqual(fixture.downloadActions, [
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.downloadActions)), [
     ["pause", 26],
     ["resume", 26]
   ]);
@@ -1400,6 +1400,209 @@ test("selected-link context menu prefers extracted anchor links", async () => {
     batch: true,
     batch_name: "Example Gallery / Chapter: 1"
   });
+});
+
+test("hands magnet links to Firelink through the existing link menu", async () => {
+  let payload = null;
+  let requiredProtocolVersion = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    requiredProtocolVersion = request.requiredProtocolVersion;
+    return { ok: true };
+  });
+
+  fixture.listeners.contextMenu(
+    {
+      menuItemId: "download-with-firelink",
+      linkUrl: "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"
+    },
+    { url: "https://example.com/page" }
+  );
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(payload.urls[0], "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567");
+  assert.equal(payload.torrent, true);
+  assert.equal(requiredProtocolVersion, 5);
+});
+
+test("keeps a mixed magnet selection as a batch while requiring magnet support", async () => {
+  let payload = null;
+  let requiredProtocolVersion = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    requiredProtocolVersion = request.requiredProtocolVersion;
+    return { ok: true };
+  });
+
+  await fixture.context.sendToFirelink(
+    [
+      "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567",
+      "https://example.com/file.zip"
+    ],
+    "https://example.com/page",
+    { batch: true, batchName: "Mixed selection" }
+  );
+
+  assert.deepEqual(JSON.parse(JSON.stringify(payload.urls)), [
+    "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567",
+    "https://example.com/file.zip"
+  ]);
+  assert.equal(payload.torrent, undefined);
+  assert.equal(payload.batch, true);
+  assert.equal(requiredProtocolVersion, 5);
+});
+
+test("hands an opaque torrent download with its settled filename", async () => {
+  let payload = null;
+  let requiredProtocolVersion = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    requiredProtocolVersion = request.requiredProtocolVersion;
+    return { ok: true };
+  });
+
+  const capture = fixture.listeners.downloadCreated({
+    id: 51,
+    url: "https://example.com/download?id=opaque",
+    referrer: "https://example.com/page",
+    filename: "/tmp/identifier"
+  });
+  fixture.listeners.downloadChanged({
+    id: 51,
+    filename: { current: "/Users/test/Downloads/example.torrent" }
+  });
+
+  // The onCreated listener waits for the filename event before entering the
+  // automatic capture path.
+  await capture;
+  assert.equal(payload.torrent, true);
+  assert.equal(payload.filename, "example.torrent");
+  assert.equal(requiredProtocolVersion, 5);
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.downloadActions)), [
+    ["pause", 51],
+    ["cancel", 51],
+    ["erase", { id: 51 }]
+  ]);
+});
+
+test("classifies a torrent reached through a redirected final URL", async () => {
+  let payload = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, {
+    downloadsById: {
+      53: {
+        id: 53,
+        url: "https://example.com/download?id=redirected",
+        finalUrl: "https://cdn.example.com/assets/final.torrent",
+        referrer: "https://example.com/page",
+        filename: "/tmp/identifier"
+      }
+    }
+  });
+
+  const capture = fixture.listeners.downloadCreated({
+    id: 53,
+    url: "https://example.com/download?id=redirected",
+    referrer: "https://example.com/page",
+    filename: "/tmp/identifier"
+  });
+  fixture.listeners.downloadChanged({
+    id: 53,
+    filename: { current: "/Users/test/Downloads/final.torrent" }
+  });
+
+  await capture;
+  assert.equal(payload.torrent, true);
+  assert.equal(payload.urls[0], "https://example.com/download?id=redirected");
+});
+
+test("keeps a stored redirected final URL when an unrelated URL delta arrives", async () => {
+  const fixture = createBackgroundContext(async () => ({ ok: true }), {
+    pendingCaptures: {
+      54: {
+        id: 54,
+        url: "https://example.com/download?id=redirected",
+        finalUrl: "https://cdn.example.com/assets/final.torrent",
+        referrer: "https://example.com/page",
+        filename: "final.torrent",
+        phase: "paused"
+      }
+    }
+  });
+
+  fixture.listeners.downloadChanged({
+    id: 54,
+    finalUrl: { current: "https://cdn.example.com/assets/final.torrent" }
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  fixture.listeners.downloadChanged({
+    id: 54,
+    url: { current: "https://example.com/download?id=redirected-again" }
+  });
+  await new Promise(resolve => setImmediate(resolve));
+
+  const saved = fixture.storageWrites
+    .map(write => write.pendingAutomaticCaptures?.["54"])
+    .find(record => record?.finalUrl === "https://cdn.example.com/assets/final.torrent");
+  assert.ok(saved);
+  assert.equal(saved.finalUrl, "https://cdn.example.com/assets/final.torrent");
+});
+
+test("classifies a magnet reported by the browser download API", async () => {
+  let payload = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, {
+    downloadsById: {
+      55: {
+        id: 55,
+        url: "https://example.com/redirect",
+        finalUrl: "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567",
+        referrer: "https://example.com/page",
+        filename: "/tmp/download"
+      }
+    }
+  });
+
+  const capture = fixture.listeners.downloadCreated({
+    id: 55,
+    url: "https://example.com/redirect",
+    referrer: "https://example.com/page",
+    filename: "/tmp/download"
+  });
+  fixture.listeners.downloadChanged({
+    id: 55,
+    filename: { current: "/Users/test/download.bin" }
+  });
+
+  await capture;
+  assert.equal(payload.torrent, true);
+});
+
+test("resumes a torrent download when the desktop protocol is too old", async () => {
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    if (request.requiredProtocolVersion > 4) {
+      throw { serverReached: true, status: 426 };
+    }
+    return { ok: true };
+  }, {
+    settings: { protocolVersion: 4 }
+  });
+
+  await fixture.listeners.downloadCreated({
+    id: 52,
+    url: "https://example.com/sample.torrent",
+    referrer: "https://example.com/page",
+    filename: "/tmp/sample.torrent"
+  });
+
+  assert.deepEqual(fixture.downloadActions, [
+    ["pause", 52],
+    ["resume", 52]
+  ]);
 });
 
 test("truncates selected-link batch titles without splitting Unicode characters", async () => {

@@ -14,7 +14,7 @@
 
 ## What it does
 
-Firelink Companion sends browser downloads, selected links, and media pages to the native [Firelink](https://github.com/nimbold/Firelink) app.
+Firelink Companion sends browser downloads, selected links, media pages, magnet links, and torrent metadata to the native [Firelink](https://github.com/nimbold/Firelink) app.
 
 Captured links open Firelink's Add window first. You can review them before starting or queuing a download.
 
@@ -23,6 +23,8 @@ Captured links open Firelink's Add window first. You can review them before star
 The current Companion release is [**2.1.0**](https://github.com/nimbold/Firelink-Extension/releases/tag/v2.1.0). It is compatible with [Firelink `1.3.0`](https://github.com/nimbold/Firelink/releases/tag/v1.3.0).
 
 The project is actively maintained. Use the latest Companion release with the latest Firelink release.
+
+Torrent handoff uses protocol version 5 and requires a paired Firelink build that supports the torrent handoff contract.
 
 ## Installation
 
@@ -42,6 +44,8 @@ After installation:
 ## Features
 
 - Automatic capture for ordinary browser downloads.
+- Magnet links through the existing link and selection context menus.
+- Automatic `.torrent` handoff to Firelink's Add window, including authenticated browser sessions and opaque download URLs.
 - Batch selected links from page context menus.
 - Optional Firelink folders named from page titles.
 - Explicit **Fetch media** actions from the popup and context menu.
@@ -62,6 +66,7 @@ After installation:
 - Explicit media requests send the canonical page URL, not a raw browser `Cookie` header.
 - Firelink handles media authentication through its configured media cookie source.
 - The original browser download is kept unless Firelink confirms the handoff.
+- Torrent downloads remain paused until Firelink confirms receipt; ambiguous handoffs stay paused to avoid duplicate delivery.
 - Requests stay on the local machine. The extension does not send download data to a remote service.
 
 ## Manual Chromium installation

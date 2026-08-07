@@ -1,4 +1,4 @@
-const ALLOWED_SCHEMES = new Set(["http:", "https:", "ftp:", "sftp:"]);
+const ALLOWED_SCHEMES = new Set(["http:", "https:", "ftp:", "sftp:", "magnet:"]);
 const PAGE_MEDIA_SCHEMES = new Set(["http:", "https:"]);
 
 const defaultSettings = {
@@ -18,6 +18,7 @@ const LAUNCH_RETRY_MS = 500;
 const LAUNCH_TIMEOUTS_BEFORE_COOLDOWN = 2;
 const LAUNCH_COOLDOWN_MS = 60000;
 const CAPTURE_FILENAME_SETTLE_TIMEOUT_MS = 2500;
+const TORRENT_CAPTURE_PROTOCOL_VERSION = 5;
 const WEAK_CAPTURE_FILENAMES = new Set(["identifier", "download", "view", "uc"]);
 const PENDING_CAPTURE_STORAGE_KEY = "pendingAutomaticCaptures";
 const PENDING_CAPTURE_RECOVERY_ALARM = "firelink-pending-capture-recovery";
@@ -217,7 +218,7 @@ function extractURLsFromText(text) {
   if (!text) {
     return [];
   }
-  const matches = text.match(/\b(?:https?|ftp|sftp):\/\/[^\s<>"']+/gi) || [];
+  const matches = text.match(/(?:\b(?:https?|ftp|sftp):\/\/[^\s<>"']+|\bmagnet:\?[^\s<>"']+)/gi) || [];
   return [...new Set(matches.map(normalizeURL).filter(Boolean))];
 }
 
@@ -416,6 +417,7 @@ function createPendingCaptureRecord(downloadItem, phase = "paused", filename) {
   return {
     id: downloadItem.id,
     url: downloadItem.url,
+    finalUrl: typeof downloadItem.finalUrl === "string" ? downloadItem.finalUrl : undefined,
     referrer: typeof downloadItem.referrer === "string" ? downloadItem.referrer : "",
     filename: normalizeCaptureFilename(filename ?? downloadItem.filename),
     cookieStoreId: typeof downloadItem.cookieStoreId === "string"
@@ -744,6 +746,35 @@ function isUsableCaptureFilename(value) {
   return Boolean(filename) && !WEAK_CAPTURE_FILENAMES.has(filename.toLowerCase());
 }
 
+function isTorrentFilename(value) {
+  return normalizeCaptureFilename(value).toLowerCase().endsWith(".torrent");
+}
+
+function isTorrentURL(value) {
+  try {
+    const url = new URL(value);
+    return ["http:", "https:"].includes(url.protocol)
+      && url.pathname.toLowerCase().endsWith(".torrent");
+  } catch (error) {
+    return false;
+  }
+}
+
+function isMagnetURL(value) {
+  try {
+    return new URL(value).protocol === "magnet:";
+  } catch (error) {
+    return false;
+  }
+}
+
+function isTorrentDownload(downloadItem, filename) {
+  return isTorrentFilename(filename)
+    || [downloadItem?.url, downloadItem?.finalUrl].some(value =>
+      isTorrentURL(value) || isMagnetURL(value)
+    );
+}
+
 function settleDownloadFilenameWait(downloadId, filename) {
   const pending = pendingDownloadFilenameWaits.get(downloadId);
   if (!pending) {
@@ -811,6 +842,12 @@ async function sendToFirelink(urls, referer = "", options = {}) {
     : [];
   const cookieString = cookieScopes.find(scope => scope.url === normalizedURLs[0])?.cookies || "";
 
+  const containsTorrentURL = normalizedURLs.some(url => isTorrentURL(url) || isMagnetURL(url));
+  // The desktop torrent contract is intentionally single-source. A mixed
+  // selection can still include a magnet as an ordinary Add-modal row, but it
+  // must not be mislabeled as one torrent request and rejected as a batch.
+  const isTorrent = normalizedURLs.length === 1
+    && (options.torrent === true || containsTorrentURL);
   const payload = {
     urls: normalizedURLs,
     referer,
@@ -821,6 +858,9 @@ async function sendToFirelink(urls, referer = "", options = {}) {
     cookie_scopes: cookieScopes.length > 0 ? cookieScopes : undefined,
     media: options.media === true
   };
+  if (isTorrent) {
+    payload.torrent = true;
+  }
   if (options.batch === true && normalizedURLs.length >= 2) {
     payload.batch = true;
     if (typeof options.batchName === "string" && options.batchName.trim()) {
@@ -828,7 +868,9 @@ async function sendToFirelink(urls, referer = "", options = {}) {
     }
   }
 
-  const requiredProtocolVersion = options.media === true
+  const requiredProtocolVersion = (isTorrent || containsTorrentURL || options.torrent === true)
+    ? TORRENT_CAPTURE_PROTOCOL_VERSION
+    : options.media === true
     ? MEDIA_FETCH_PROTOCOL_VERSION
     : captureMode === "automatic" ? 3 : undefined;
 
@@ -975,6 +1017,11 @@ async function handleAutomaticCapture(downloadItem, filenameWait, pendingRecord 
       ? await filenameWait.promise
       : record.filename;
     record.filename = filename || record.filename;
+    const currentDownload = await findDownload(record.id);
+    if (typeof currentDownload?.finalUrl === "string" && currentDownload.finalUrl) {
+      record.finalUrl = currentDownload.finalUrl;
+    }
+    const torrent = isTorrentDownload(record, record.filename);
     if (!automaticCaptureAllowedForDownload(record.url, record.referrer)) {
       await removePendingCaptureAndResume(record.id);
       return;
@@ -1010,6 +1057,7 @@ async function handleAutomaticCapture(downloadItem, filenameWait, pendingRecord 
           incognito: record.incognito,
           notifyOnFailure: false,
           filename: record.filename || undefined,
+          torrent,
           onRequestMayHaveBeenSent: () => {
             handoffMayHaveBeenSent = true;
           }
@@ -1111,6 +1159,9 @@ async function recoverPendingCaptures() {
         {
           ...downloadItem,
           url: record.url,
+          finalUrl: typeof downloadItem.finalUrl === "string"
+            ? downloadItem.finalUrl
+            : record.finalUrl,
           referrer: record.referrer,
           filename: isUsableCaptureFilename(downloadItem.filename)
             ? normalizeCaptureFilename(downloadItem.filename)
@@ -1269,6 +1320,10 @@ function runDownloadAction(action, ...args) {
 }
 
 chrome.downloads.onChanged.addListener(change => {
+  const changedFinalUrl = change.finalUrl?.current;
+  if (typeof changedFinalUrl === "string" && changedFinalUrl) {
+    void updatePendingCapture(change.id, { finalUrl: changedFinalUrl }).catch(() => {});
+  }
   const filename = change.filename?.current;
   if (filename !== undefined && isUsableCaptureFilename(filename)) {
     settleDownloadFilenameWait(change.id, filename);
