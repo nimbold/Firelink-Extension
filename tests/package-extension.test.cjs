@@ -19,6 +19,7 @@ test("generates a Chromium Manifest V3 service worker manifest", () => {
   assert.equal(manifest.manifest_version, 3);
   assert.ok(manifest.permissions.includes("downloads"));
   assert.ok(manifest.permissions.includes("cookies"));
+  assert.deepEqual(manifest.host_permissions, ["<all_urls>"]);
 });
 
 test("packages Firefox and Chromium load-unpacked directories", () => {

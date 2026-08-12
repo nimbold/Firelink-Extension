@@ -151,7 +151,7 @@ function registerContextMenus() {
           {
             id: "fetch-media-with-firelink",
             title: contextMenu.fetchMedia || "Fetch media with Firelink",
-            contexts: ["page", "video", "audio"]
+            contexts: ["page", "link", "video", "audio"]
           }
         ];
         for (const item of items) {
@@ -1155,21 +1155,22 @@ async function recoverPendingCaptures() {
         await removePendingCapture(record.id);
         continue;
       }
+      const recoveredDownloadItem = {
+        ...downloadItem,
+        url: record.url,
+        finalUrl: typeof downloadItem.finalUrl === "string"
+          ? downloadItem.finalUrl
+          : record.finalUrl,
+        referrer: record.referrer,
+        filename: isUsableCaptureFilename(downloadItem.filename)
+          ? normalizeCaptureFilename(downloadItem.filename)
+          : record.filename,
+        cookieStoreId: record.cookieStoreId,
+        incognito: record.incognito
+      };
       await handleAutomaticCapture(
-        {
-          ...downloadItem,
-          url: record.url,
-          finalUrl: typeof downloadItem.finalUrl === "string"
-            ? downloadItem.finalUrl
-            : record.finalUrl,
-          referrer: record.referrer,
-          filename: isUsableCaptureFilename(downloadItem.filename)
-            ? normalizeCaptureFilename(downloadItem.filename)
-            : record.filename,
-          cookieStoreId: record.cookieStoreId,
-          incognito: record.incognito
-        },
-        null,
+        recoveredDownloadItem,
+        waitForDownloadFilename(recoveredDownloadItem),
         record
       );
     }
@@ -1181,7 +1182,9 @@ async function recoverPendingCaptures() {
 }
 
 async function fetchMediaForTab(tab, options = {}) {
-  const pageURL = normalizePageMediaURL(tab?.url) || normalizePageMediaURL(options.srcUrl);
+  const pageURL = options.preferSrcUrl === true
+    ? normalizePageMediaURL(options.srcUrl) || normalizePageMediaURL(tab?.url)
+    : normalizePageMediaURL(tab?.url) || normalizePageMediaURL(options.srcUrl);
   if (!pageURL) {
     if (options.notifyOnFailure !== false) {
       notify(
@@ -1259,7 +1262,8 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 
   if (info.menuItemId === "fetch-media-with-firelink") {
     void fetchMediaForTab(tab, {
-      srcUrl: info.srcUrl,
+      srcUrl: info.linkUrl || info.srcUrl,
+      preferSrcUrl: Boolean(info.linkUrl),
       notifyOnSuccess: true
     }).catch(error => reportContextMenuHandoffFailure("media context-menu", error));
     return;
@@ -1327,9 +1331,14 @@ chrome.downloads.onChanged.addListener(change => {
   const filename = change.filename?.current;
   if (filename !== undefined && isUsableCaptureFilename(filename)) {
     settleDownloadFilenameWait(change.id, filename);
+    void updatePendingCapture(change.id, {
+      filename: normalizeCaptureFilename(filename)
+    }).catch(() => {});
   }
   const state = change.state?.current;
-  if (state && state !== "paused") {
+  const resumed = change.paused?.current === false;
+  const terminal = state === "complete" || state === "interrupted";
+  if (resumed || terminal) {
     void mutatePendingCaptureMap(current => {
       const record = current[String(change.id)];
       if (!record || activeAutomaticCaptures.has(change.id)) {

@@ -221,7 +221,8 @@ function createBackgroundContext(signedFetch, options = {}) {
     contextMenuItems,
     executedScripts,
     sentMessages,
-    listeners
+    listeners,
+    getPendingCaptures: () => persistedPendingCaptures
   };
 }
 
@@ -246,6 +247,11 @@ test("localizes and refreshes IDM-style browser context menus", async () => {
       "دریافت رسانه با Firelink"
     ]
   );
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.contextMenuItems.map(item => item.contexts))), [
+    ["link"],
+    ["selection"],
+    ["page", "link", "video", "audio"]
+  ]);
 
   fixture.listeners.storageChanged({ language: { newValue: "ru" } }, "local");
   fixture.listeners.storageChanged({ language: { newValue: "uk" } }, "local");
@@ -1731,4 +1737,139 @@ test("media context menu sends the tab page instead of transient media src", asy
   assert.equal(payload.referer, "https://youtube.com/watch?v=abc");
   assert.equal(payload.media, true);
   assert.equal(requiredProtocolVersion, 4);
+});
+
+test("media context menu sends a clicked media page link with explicit media intent", async () => {
+  let payload = null;
+  let requiredProtocolVersion = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    requiredProtocolVersion = request.requiredProtocolVersion;
+    return { ok: true };
+  });
+
+  fixture.listeners.contextMenu(
+    {
+      menuItemId: "fetch-media-with-firelink",
+      linkUrl: "https://www.youtube.com/watch?v=abc"
+    },
+    {
+      url: "https://www.youtube.com/playlist?list=xyz",
+      cookieStoreId: "firefox-default"
+    }
+  );
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.deepEqual(JSON.parse(JSON.stringify(payload)), {
+    urls: ["https://www.youtube.com/watch?v=abc"],
+    referer: "https://www.youtube.com/watch?v=abc",
+    silent: false,
+    media: true
+  });
+  assert.equal(requiredProtocolVersion, 4);
+});
+
+test("persists a filename update after a worker restart without an in-memory waiter", async () => {
+  const fixture = createBackgroundContext(async () => ({ ok: true }), {
+    pendingCaptures: {
+      "56": {
+        id: 56,
+        url: "https://example.com/download?id=opaque",
+        referrer: "https://example.com/page",
+        filename: "identifier",
+        phase: "uncertain"
+      }
+    },
+    downloadsById: {
+      56: {
+        id: 56,
+        url: "https://example.com/download?id=opaque",
+        state: "paused",
+        paused: true,
+        filename: "/tmp/identifier"
+      }
+    }
+  });
+
+  fixture.listeners.downloadChanged({
+    id: 56,
+    filename: { current: "/Users/test/Downloads/restarted.torrent" }
+  });
+  await new Promise(resolve => setImmediate(resolve));
+
+  const saved = fixture.storageWrites
+    .map(write => write.pendingAutomaticCaptures?.["56"])
+    .find(record => record?.filename === "restarted.torrent");
+  assert.ok(saved);
+});
+
+test("worker restart refreshes a weak filename before retrying a paused capture", async () => {
+  let payload = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, {
+    pendingCaptures: {
+      "57": {
+        id: 57,
+        url: "https://example.com/download?id=opaque",
+        referrer: "https://example.com/page",
+        filename: "identifier",
+        phase: "paused"
+      }
+    },
+    downloadsById: {
+      57: {
+        id: 57,
+        url: "https://example.com/download?id=opaque",
+        state: "in_progress",
+        paused: true,
+        filename: "/tmp/identifier"
+      }
+    }
+  });
+
+  await new Promise(resolve => setImmediate(resolve));
+  fixture.listeners.downloadChanged({
+    id: 57,
+    filename: { current: "/Users/test/Downloads/restarted.torrent" }
+  });
+  for (let attempt = 0; attempt < 20 && !payload; attempt += 1) {
+    await new Promise(resolve => setImmediate(resolve));
+  }
+
+  assert.equal(payload?.filename, "restarted.torrent");
+  assert.equal(payload?.torrent, true);
+});
+
+test("keeps a paused recovery record when the browser reports in-progress state", async () => {
+  const fixture = createBackgroundContext(async () => ({ ok: true }), {
+    pendingCaptures: {
+      "58": {
+        id: 58,
+        url: "https://example.com/download?id=paused",
+        referrer: "https://example.com/page",
+        filename: "file.zip",
+        phase: "uncertain"
+      }
+    },
+    downloadsById: {
+      58: {
+        id: 58,
+        url: "https://example.com/download?id=paused",
+        state: "in_progress",
+        paused: true,
+        filename: "/tmp/file.zip"
+      }
+    }
+  });
+
+  fixture.listeners.downloadChanged({
+    id: 58,
+    state: { current: "in_progress" },
+    paused: { current: true }
+  });
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(fixture.getPendingCaptures()["58"]?.phase, "uncertain");
 });

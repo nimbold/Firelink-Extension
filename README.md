@@ -69,6 +69,15 @@ After installation:
 - Torrent downloads remain paused until Firelink confirms receipt; ambiguous handoffs stay paused to avoid duplicate delivery.
 - Requests stay on the local machine. The extension does not send download data to a remote service.
 
+### Browser permissions
+
+The extension requests access to all web pages because automatic capture runs
+at document start and browser cookies may be needed for authenticated ordinary
+downloads. It also uses the browser downloads, context-menu, storage, alarm,
+script-injection, notification, and cookie APIs listed in `manifest.json`.
+Those permissions support the features above; the extension sends handoff data
+only to the paired Firelink app on localhost.
+
 ## Manual Chromium installation
 
 Chromium builds are distributed as load-unpacked packages until a browser-store release is available.
