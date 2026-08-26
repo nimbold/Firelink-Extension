@@ -820,6 +820,86 @@ test("automatic capture marks the payload silent but still confirms success", as
   assert.equal(fixture.createdNotifications.length, 1);
 });
 
+test("automatic capture waits for the browser pause state to settle before handoff", async () => {
+  let payload = null;
+  const browserItem = {
+    id: 82,
+    url: "https://example.com/file.zip",
+    filename: "/tmp/file.zip",
+    paused: false
+  };
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, {
+    downloadsById: { 82: browserItem },
+    onDownloadAction(action) {
+      if (action === "pause") {
+        // Firefox may resolve downloads.pause before downloads.search exposes
+        // the new paused state. The handoff must wait for that postcondition.
+        setTimeout(() => { browserItem.paused = true; }, 0);
+      }
+    }
+  });
+
+  await fixture.listeners.downloadCreated({
+    id: 82,
+    url: "https://example.com/file.zip",
+    referrer: "https://example.com/page",
+    filename: "/tmp/file.zip"
+  });
+
+  assert.equal(payload.silent, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.downloadActions)), [
+    ["pause", 82],
+    ["cancel", 82],
+    ["erase", { id: 82 }]
+  ]);
+});
+
+test("automatic capture uses browser metadata after filename settling", async () => {
+  let payload = null;
+  let fixture;
+  const browserItem = {
+    id: 83,
+    url: "https://example.com/file.zip",
+    filename: "/tmp/identifier",
+    paused: false
+  };
+  fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, {
+    downloadsById: { 83: browserItem },
+    onDownloadAction(action) {
+      if (action === "pause") {
+        browserItem.paused = true;
+        setTimeout(() => {
+          browserItem.filename = "/tmp/final.zip";
+          fixture.listeners.downloadChanged({
+            id: 83,
+            filename: { current: "/tmp/final.zip" }
+          });
+        }, 0);
+      }
+    }
+  });
+
+  await fixture.listeners.downloadCreated({
+    id: 83,
+    url: "https://example.com/file.zip",
+    referrer: "https://example.com/page",
+    filename: "/tmp/identifier"
+  });
+
+  assert.equal(payload.filename, "final.zip");
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.downloadActions)), [
+    ["pause", 83],
+    ["cancel", 83],
+    ["erase", { id: 83 }]
+  ]);
+});
+
 test("automatic capture waits for a stabilized filename after a weak initial name", async () => {
   let payload = null;
   const fixture = createBackgroundContext(async (_path, _token, request) => {

@@ -18,6 +18,8 @@ const LAUNCH_RETRY_MS = 500;
 const LAUNCH_TIMEOUTS_BEFORE_COOLDOWN = 2;
 const LAUNCH_COOLDOWN_MS = 60000;
 const CAPTURE_FILENAME_SETTLE_TIMEOUT_MS = 2500;
+const CAPTURE_PAUSE_SETTLE_TIMEOUT_MS = 2500;
+const CAPTURE_PAUSE_SETTLE_INTERVAL_MS = 50;
 const TORRENT_CAPTURE_PROTOCOL_VERSION = 5;
 const WEAK_CAPTURE_FILENAMES = new Set(["identifier", "download", "view", "uc"]);
 const TORRENT_MIME_TYPES = new Set([
@@ -585,6 +587,9 @@ function beginAutomaticCapture(downloadId) {
   const session = {
     downloadId,
     userResumed: false,
+    awaitingPauseConfirmation: false,
+    pauseConfirmed: false,
+    pauseUnconfirmed: false,
     terminal: false,
     downloadMissing: false,
     downloadLookupFailed: false,
@@ -667,7 +672,7 @@ function isTerminalDownload(downloadItem) {
   return downloadItem?.state === "complete" || downloadItem?.state === "interrupted";
 }
 
-async function findOwnedAutomaticDownload(record, session) {
+async function findOwnedAutomaticDownload(record, session, { waitForPause = false } = {}) {
   if (automaticCaptureInvalidated(session)) {
     return null;
   }
@@ -692,9 +697,52 @@ async function findOwnedAutomaticDownload(record, session) {
     return null;
   }
   if (downloadItem.paused !== true) {
+    if (waitForPause && session.awaitingPauseConfirmation && !session.pauseConfirmed) {
+      const deadline = Date.now() + CAPTURE_PAUSE_SETTLE_TIMEOUT_MS;
+      while (Date.now() < deadline) {
+        if (automaticCaptureInvalidated(session)) {
+          return null;
+        }
+        await delay(Math.min(
+          CAPTURE_PAUSE_SETTLE_INTERVAL_MS,
+          Math.max(0, deadline - Date.now())
+        ));
+        if (automaticCaptureInvalidated(session)) {
+          return null;
+        }
+        try {
+          downloadItem = await findDownload(record.id);
+        } catch (error) {
+          session.downloadLookupFailed = true;
+          return null;
+        }
+        if (!downloadItem) {
+          session.downloadMissing = true;
+          return null;
+        }
+        if (!pendingCaptureMatchesDownload(record, downloadItem)) {
+          session.downloadMissing = true;
+          return null;
+        }
+        if (isTerminalDownload(downloadItem)) {
+          session.terminal = true;
+          return null;
+        }
+        if (downloadItem.paused === true) {
+          session.pauseConfirmed = true;
+          session.awaitingPauseConfirmation = false;
+          return downloadItem;
+        }
+      }
+      session.pauseUnconfirmed = true;
+      session.downloadLookupFailed = true;
+      return null;
+    }
     session.userResumed = true;
     return null;
   }
+  session.pauseConfirmed = true;
+  session.awaitingPauseConfirmation = false;
   return downloadItem;
 }
 
@@ -1393,6 +1441,10 @@ async function handleAutomaticCapture(
       return;
     }
     if (session.downloadLookupFailed) {
+      if (session.pauseUnconfirmed) {
+        await resumeAndForgetAutomaticCapture(record.id, session);
+        return;
+      }
       await updatePendingCapture(record.id, { phase: "ready" });
       schedulePendingCaptureRecovery();
       return;
@@ -1424,11 +1476,19 @@ async function handleAutomaticCapture(
       return;
     }
 
+    let currentDownload = await findOwnedAutomaticDownload(record, session, { waitForPause: true });
+    if (!currentDownload) {
+      await abandonBeforeHandoff();
+      return;
+    }
     const filename = filenameWait
       ? await filenameWait.promise
       : record.filename;
     record.filename = filename || record.filename;
-    const currentDownload = await findOwnedAutomaticDownload(record, session);
+    // Filename settling can yield while the user resumes the item or while
+    // redirects and headers update the browser's download metadata. Recheck
+    // ownership after the wait and use that fresh snapshot for the handoff.
+    currentDownload = await findOwnedAutomaticDownload(record, session);
     if (!currentDownload) {
       await abandonBeforeHandoff();
       return;
@@ -2198,8 +2258,10 @@ chrome.downloads.onCreated.addListener(async downloadItem => {
     return;
   }
 
+  session.awaitingPauseConfirmation = true;
   const paused = await runDownloadAction("pause", downloadItem.id);
   if (!paused) {
+    session.awaitingPauseConfirmation = false;
     await removePendingCaptureAndResume(record.id, session);
     activeAutomaticCaptures.delete(record.id);
     filenameWait.cancel();
