@@ -1,5 +1,36 @@
 document.addEventListener('DOMContentLoaded', () => {
   const { catalogs, localeCodes, themes, resolveLocale, normalizeLanguagePreference, normalizeTheme } = globalThis.FirelinkPopupI18n;
+  const callBrowserApi = (target, methodName, args = []) => {
+    const method = target?.[methodName];
+    if (typeof method !== 'function') {
+      return Promise.resolve({ ok: false, value: undefined });
+    }
+
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (ok, value) => {
+        if (settled) return;
+        settled = true;
+        resolve({ ok, value });
+      };
+      const callback = (...values) => {
+        if (chrome.runtime.lastError) {
+          finish(false, undefined);
+          return;
+        }
+        finish(true, values.length <= 1 ? values[0] : values);
+      };
+
+      try {
+        const result = method.call(target, ...args, callback);
+        if (result && typeof result.then === 'function') {
+          result.then((value) => finish(true, value), () => finish(false, undefined));
+        }
+      } catch (error) {
+        finish(false, undefined);
+      }
+    });
+  };
   const globalToggle = document.getElementById('global-toggle');
   const siteToggle = document.getElementById('site-toggle');
   const siteSettingRow = document.getElementById('site-setting-row');
@@ -33,8 +64,56 @@ document.addEventListener('DOMContentLoaded', () => {
   };
   let saveResetTimer = null;
   let connectionRequestId = 0;
+  let tokenSaveRequestId = 0;
+  let tokenSaveMutation = Promise.resolve();
+  let siteToggleMutation = Promise.resolve();
+  const settingMutationQueues = new Map();
+  const settingMutationIds = new Map();
+  const persistedSettings = {
+    globalCapture: false,
+    language: 'system',
+    theme: 'system',
+    siteToggles: {}
+  };
   let storageLoading = true;
   const storageChangedDuringLoad = new Set();
+
+  const normalizeSiteToggles = (value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+    return { ...value };
+  };
+
+  const cloneSettingValue = (value) => (
+    value && typeof value === 'object' ? { ...value } : value
+  );
+
+  const nextSettingMutationId = (key) => {
+    const mutationId = (settingMutationIds.get(key) || 0) + 1;
+    settingMutationIds.set(key, mutationId);
+    return mutationId;
+  };
+
+  const invalidateSettingMutation = (key) => {
+    nextSettingMutationId(key);
+  };
+
+  const persistSetting = (key, value, onFailure) => {
+    const mutationId = nextSettingMutationId(key);
+    const previousMutation = settingMutationQueues.get(key) || Promise.resolve();
+    const operation = previousMutation
+      .catch(() => {})
+      .then(() => callBrowserApi(chrome.storage.local, 'set', [{ [key]: value }]))
+      .then((result) => {
+        if (result.ok) {
+          persistedSettings[key] = cloneSettingValue(value);
+        } else if (settingMutationIds.get(key) === mutationId) {
+          onFailure?.(cloneSettingValue(persistedSettings[key]));
+        }
+        return result;
+      });
+    settingMutationQueues.set(key, operation.catch(() => {}));
+    return operation;
+  };
 
   const catalog = () => catalogs[state.locale];
 
@@ -91,7 +170,11 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('disable-on-site-label').textContent = current.disableOnSite;
     document.getElementById('pairing-label').textContent = current.pairingToken;
     tokenInput.placeholder = current.pasteTokenPlaceholder;
-    saveTokenBtn.textContent = state.saveState === 'saved' ? current.saved : current.save;
+    saveTokenBtn.textContent = state.saveState === 'saved'
+      ? current.saved
+      : state.saveState === 'error'
+      ? current.saveFailed
+      : current.save;
     settingsToggle.setAttribute('aria-label', current.settings);
     settingsToggle.title = current.settings;
     renderSettingsOptions();
@@ -130,6 +213,8 @@ document.addEventListener('DOMContentLoaded', () => {
       mediaStatus.textContent = current.sending;
     } else if (state.media === 'couldNotSend') {
       mediaStatus.textContent = current.couldNotSend;
+    } else if (state.media === 'ambiguous') {
+      mediaStatus.textContent = current.mediaAmbiguous;
     } else {
       mediaStatus.textContent = current.opened;
     }
@@ -215,7 +300,7 @@ document.addEventListener('DOMContentLoaded', () => {
       setPairingExpanded(false);
     } catch (error) {
       if (!isCurrentRequest()) return;
-      if (error.serverReached && error.status === 403) {
+      if (error?.serverReached && error.status === 403) {
         state.connection = 'invalid';
         setPairingExpanded(true);
         renderConnection();
@@ -231,11 +316,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
   tokenInput.addEventListener('input', () => {
     connectionRequestId += 1;
+    tokenSaveRequestId += 1;
   });
 
   const loadActiveTab = () => {
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      const tab = tabs.length > 0 && tabs[0].url ? tabs[0] : null;
+    void callBrowserApi(chrome.tabs, 'query', [{ active: true, currentWindow: true }]).then((result) => {
+      const tabs = result.ok ? result.value : null;
+      if (!Array.isArray(tabs)) {
+        setMediaStatusForTab(null);
+        siteSettingRow.hidden = true;
+        return;
+      }
+      const tab = tabs.length > 0 && tabs[0]?.url ? tabs[0] : null;
       setMediaStatusForTab(tab);
       if (!isMediaFetchableTab(tab)) {
         siteSettingRow.hidden = true;
@@ -245,24 +337,47 @@ document.addEventListener('DOMContentLoaded', () => {
       siteSettingRow.hidden = false;
       const hostname = currentHostname();
       hostnameSpan.textContent = hostname;
-      chrome.storage.local.get(['siteToggles'], (result) => {
-        const siteToggles = result.siteToggles || {};
-        siteToggle.checked = siteToggles[hostname] === true;
+      void callBrowserApi(chrome.storage.local, 'get', [['siteToggles']]).then((result) => {
+        const values = result.ok ? result.value : null;
+        if (!values || typeof values.siteToggles !== 'object'
+          || Array.isArray(values.siteToggles)) {
+          persistedSettings.siteToggles = {};
+          siteToggle.checked = false;
+          return;
+        }
+        persistedSettings.siteToggles = normalizeSiteToggles(values.siteToggles);
+        siteToggle.checked = persistedSettings.siteToggles[hostname] === true;
       });
     });
   };
 
   const saveToken = () => {
-    chrome.storage.local.set({ extensionToken: tokenInput.value.trim() }, () => {
-      state.saveState = 'saved';
+    const token = tokenInput.value.trim();
+    const requestId = ++tokenSaveRequestId;
+    let settled = false;
+    const finish = (success) => {
+      if (settled || requestId !== tokenSaveRequestId || token !== tokenInput.value.trim()) {
+        return;
+      }
+      settled = true;
+      state.saveState = success ? 'saved' : 'error';
       renderStaticCopy();
-      checkConnection();
+      if (success) {
+        void checkConnection();
+      }
       clearTimeout(saveResetTimer);
       saveResetTimer = setTimeout(() => {
+        if (requestId !== tokenSaveRequestId) return;
         state.saveState = 'idle';
         renderStaticCopy();
       }, 2000);
-    });
+    };
+
+    const saveOperation = tokenSaveMutation
+      .catch(() => {})
+      .then(() => callBrowserApi(chrome.storage.local, 'set', [{ extensionToken: token }]));
+    tokenSaveMutation = saveOperation.catch(() => {});
+    void saveOperation.then(result => finish(result.ok));
   };
 
   settingsToggle.addEventListener('click', () => {
@@ -273,15 +388,24 @@ document.addEventListener('DOMContentLoaded', () => {
 
   languageSelect.addEventListener('change', () => {
     const preference = normalizeLanguagePreference(languageSelect.value);
-    chrome.storage.local.set({ language: preference });
     setLanguagePreference(preference);
+    void persistSetting('language', preference, (persistedPreference) => {
+      if (state.languagePreference === preference) {
+        setLanguagePreference(persistedPreference);
+      }
+    });
   });
 
   themeSelect.addEventListener('change', () => {
     const theme = normalizeTheme(themeSelect.value);
-    chrome.storage.local.set({ theme });
     applyTheme(theme);
     renderSettingsOptions();
+    void persistSetting('theme', theme, (persistedTheme) => {
+      if (state.theme === theme) {
+        applyTheme(persistedTheme);
+        renderSettingsOptions();
+      }
+    });
   });
 
   pairingSection.addEventListener('click', (event) => {
@@ -290,7 +414,12 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   globalToggle.addEventListener('change', (event) => {
-    chrome.storage.local.set({ globalCapture: event.target.checked });
+    const checked = event.target.checked === true;
+    void persistSetting('globalCapture', checked, (persistedGlobalCapture) => {
+      if (globalToggle.checked === checked) {
+        globalToggle.checked = persistedGlobalCapture === true;
+      }
+    });
   });
 
   saveTokenBtn.addEventListener('click', saveToken);
@@ -304,10 +433,11 @@ document.addEventListener('DOMContentLoaded', () => {
     fetchMediaBtn.disabled = true;
     state.media = 'sending';
     renderMediaStatus();
-    chrome.runtime.sendMessage({ action: 'fetchMediaForActiveTab' }, (response) => {
-      if (chrome.runtime.lastError || !response?.ok) {
-        state.media = 'couldNotSend';
-        fetchMediaBtn.disabled = false;
+    void callBrowserApi(chrome.runtime, 'sendMessage', [{ action: 'fetchMediaForActiveTab' }]).then((result) => {
+      const response = result.ok ? result.value : null;
+      if (!response?.ok) {
+        state.media = response?.ambiguous === true ? 'ambiguous' : 'couldNotSend';
+        fetchMediaBtn.disabled = response?.ambiguous === true;
         renderMediaStatus();
         return;
       }
@@ -321,12 +451,34 @@ document.addEventListener('DOMContentLoaded', () => {
   siteToggle.addEventListener('change', (event) => {
     const hostname = currentHostname();
     if (!hostname) return;
+    const checked = event.target.checked;
 
-    chrome.storage.local.get(['siteToggles'], (result) => {
-      const siteToggles = result.siteToggles || {};
-      siteToggles[hostname] = event.target.checked;
-      chrome.storage.local.set({ siteToggles });
-    });
+    siteToggleMutation = siteToggleMutation
+      .catch(() => {})
+      .then(async () => {
+        const result = await callBrowserApi(chrome.storage.local, 'get', [['siteToggles']]);
+        if (!result.ok) {
+          if (currentHostname() === hostname && siteToggle.checked === checked) {
+            siteToggle.checked = persistedSettings.siteToggles[hostname] === true;
+          }
+          return;
+        }
+        const values = result.value && typeof result.value === 'object' ? result.value : {};
+        const storedSiteToggles = values.siteToggles;
+        const siteToggles = storedSiteToggles
+          && typeof storedSiteToggles === 'object'
+          && !Array.isArray(storedSiteToggles)
+          ? { ...storedSiteToggles }
+          : {};
+        siteToggles[hostname] = checked;
+        const writeResult = await callBrowserApi(chrome.storage.local, 'set', [{ siteToggles }]);
+        if (writeResult.ok) {
+          persistedSettings.siteToggles = { ...siteToggles };
+        } else if (currentHostname() === hostname && siteToggle.checked === checked) {
+          siteToggle.checked = persistedSettings.siteToggles[hostname] === true;
+        }
+      })
+      .catch(() => {});
   });
 
   const onSystemThemeChange = () => {
@@ -339,27 +491,45 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   const applyStorageChange = (changes) => {
-    if (Object.prototype.hasOwnProperty.call(changes, 'globalCapture')) {
-      globalToggle.checked = changes.globalCapture.newValue === true;
+    if (!changes || typeof changes !== 'object') return;
+
+    const globalChange = changes.globalCapture;
+    if (globalChange && typeof globalChange === 'object') {
+      invalidateSettingMutation('globalCapture');
+      persistedSettings.globalCapture = globalChange.newValue === true;
+      globalToggle.checked = persistedSettings.globalCapture;
     }
 
-    if (Object.prototype.hasOwnProperty.call(changes, 'language')) {
-      setLanguagePreference(changes.language.newValue);
+    const languageChange = changes.language;
+    if (languageChange && typeof languageChange === 'object') {
+      invalidateSettingMutation('language');
+      persistedSettings.language = normalizeLanguagePreference(languageChange.newValue);
+      setLanguagePreference(persistedSettings.language);
     }
 
-    if (Object.prototype.hasOwnProperty.call(changes, 'theme')) {
-      applyTheme(changes.theme.newValue);
+    const themeChange = changes.theme;
+    if (themeChange && typeof themeChange === 'object') {
+      invalidateSettingMutation('theme');
+      persistedSettings.theme = normalizeTheme(themeChange.newValue);
+      applyTheme(persistedSettings.theme);
       renderSettingsOptions();
     }
 
-    if (Object.prototype.hasOwnProperty.call(changes, 'siteToggles') && state.activeTab) {
+    const siteTogglesChange = changes.siteToggles;
+    if (siteTogglesChange && typeof siteTogglesChange === 'object') {
+      persistedSettings.siteToggles = normalizeSiteToggles(siteTogglesChange.newValue);
+    }
+    if (siteTogglesChange && typeof siteTogglesChange === 'object' && state.activeTab) {
       const hostname = currentHostname();
-      siteToggle.checked = changes.siteToggles.newValue?.[hostname] === true;
+      siteToggle.checked = persistedSettings.siteToggles[hostname] === true;
     }
 
-    if (Object.prototype.hasOwnProperty.call(changes, 'extensionToken')
+    const extensionTokenChange = changes.extensionToken;
+    if (extensionTokenChange && typeof extensionTokenChange === 'object'
       && document.activeElement !== tokenInput) {
-      tokenInput.value = changes.extensionToken.newValue || '';
+      tokenInput.value = typeof extensionTokenChange.newValue === 'string'
+        ? extensionTokenChange.newValue
+        : '';
       void checkConnection();
     }
   };
@@ -368,7 +538,7 @@ document.addEventListener('DOMContentLoaded', () => {
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area !== 'local') return;
       for (const key of ['globalCapture', 'siteToggles', 'theme', 'language', 'extensionToken']) {
-        if (Object.prototype.hasOwnProperty.call(changes, key) && storageLoading) {
+        if (changes?.[key] && typeof changes[key] === 'object' && storageLoading) {
           storageChangedDuringLoad.add(key);
         }
       }
@@ -376,21 +546,33 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  chrome.storage.local.get(['globalCapture', 'siteToggles', 'theme', 'language', 'extensionToken'], (result) => {
+  void callBrowserApi(chrome.storage.local, 'get', [
+    ['globalCapture', 'siteToggles', 'theme', 'language', 'extensionToken']
+  ]).then((storageResult) => {
+    let result = storageResult.ok ? storageResult.value : null;
+    result = result && typeof result === 'object' ? result : {};
     if (!storageChangedDuringLoad.has('globalCapture')) {
-      globalToggle.checked = result.globalCapture === true;
+      persistedSettings.globalCapture = result.globalCapture === true;
+      globalToggle.checked = persistedSettings.globalCapture;
     }
     if (!storageChangedDuringLoad.has('extensionToken')) {
-      tokenInput.value = result.extensionToken || '';
+      tokenInput.value = typeof result.extensionToken === 'string'
+        ? result.extensionToken
+        : '';
     }
     if (!storageChangedDuringLoad.has('language')) {
-      state.languagePreference = normalizeLanguagePreference(result.language);
+      persistedSettings.language = normalizeLanguagePreference(result.language);
+      state.languagePreference = persistedSettings.language;
       state.locale = state.languagePreference === 'system'
         ? resolveLocale(navigator.language)
         : state.languagePreference;
     }
     if (!storageChangedDuringLoad.has('theme')) {
-      applyTheme(result.theme);
+      persistedSettings.theme = normalizeTheme(result.theme);
+      applyTheme(persistedSettings.theme);
+    }
+    if (!storageChangedDuringLoad.has('siteToggles')) {
+      persistedSettings.siteToggles = normalizeSiteToggles(result.siteToggles);
     }
     storageLoading = false;
     state.pairingExpanded = !tokenInput.value;

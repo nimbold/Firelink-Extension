@@ -17,6 +17,7 @@
   const REQUEST_TIMEOUT_MS = 5000;
 
   let preferredPort = null;
+  let lastRequestTimestamp = 0;
 
   class FirelinkRequestError extends Error {
     constructor(message, status = null, serverReached = false, requestMayHaveBeenSent = false) {
@@ -64,6 +65,15 @@
     return Array.from(bytes)
       .map(byte => byte.toString(16).padStart(2, "0"))
       .join("");
+  }
+
+  function nextRequestTimestamp() {
+    const now = Date.now();
+    lastRequestTimestamp = Math.max(
+      Number.isFinite(now) ? Math.trunc(now) : 0,
+      lastRequestTimestamp + 1
+    );
+    return lastRequestTimestamp.toString();
   }
 
   function isFirelinkResponse(response) {
@@ -122,7 +132,7 @@
     const body = options.payload === undefined
       ? ""
       : JSON.stringify(options.payload);
-    const timestamp = options.timestamp || Date.now().toString();
+    const timestamp = options.timestamp || nextRequestTimestamp();
     const signature = await generateHMAC(token, timestamp, body);
     const controller = options.controller || new AbortController();
     const timeout = setTimeout(
@@ -156,7 +166,7 @@
   }
 
   async function probePort(port, token, controller) {
-    const timestamp = Date.now().toString();
+    const timestamp = nextRequestTimestamp();
     const nonce = generateNonce();
     const response = await requestAtPort(port, "/ping", token, {
       controller,
@@ -165,7 +175,7 @@
       timeoutMs: DISCOVERY_TIMEOUT_MS
     });
     await verifyServerProof(response, token, timestamp, nonce, port);
-    return { port, response };
+    return { port, response, controller };
   }
 
   async function discoverServer(token) {
@@ -187,7 +197,11 @@
 
     try {
       const server = await Promise.any(probes);
-      controllers.forEach(controller => controller.abort());
+      controllers.forEach(controller => {
+        if (controller !== server.controller) {
+          controller.abort();
+        }
+      });
       preferredPort = server.port;
       return server;
     } catch (error) {
@@ -216,7 +230,8 @@
     return new FirelinkRequestError(
       `Firelink rejected request with HTTP ${response.status}`,
       response.status,
-      true
+      true,
+      response.status === 504
     );
   }
 
@@ -233,7 +248,7 @@
       return server.response;
     }
 
-    const timestamp = Date.now().toString();
+    const timestamp = nextRequestTimestamp();
     const nonce = generateNonce();
     let response;
     try {
@@ -254,16 +269,33 @@
       );
     }
 
-    if (!isFirelinkResponse(response)) {
-      preferredPort = null;
-      throw new FirelinkRequestError("Firelink connection identity changed");
+    let identifiedFirelinkResponse = false;
+    try {
+      identifiedFirelinkResponse = isFirelinkResponse(response);
+      if (!identifiedFirelinkResponse) {
+        preferredPort = null;
+        throw new FirelinkRequestError("Firelink connection identity changed", null, true);
+      }
+      requireProtocolVersion(response, options.requiredProtocolVersion);
+      if (!response.ok) {
+        throw rejectedResponse(response);
+      }
+      await verifyServerProof(response, token, timestamp, nonce, server.port);
+      return response;
+    } catch (error) {
+      // Once an otherwise successful /download response has arrived, the
+      // request may already have been admitted before response authentication
+      // failed. Automatic callers must preserve their original rather than
+      // retrying or resuming into a possible duplicate.
+      if (path === "/download"
+        && identifiedFirelinkResponse
+        && response?.ok === true
+        && error
+        && typeof error === "object") {
+        error.requestMayHaveBeenSent = true;
+      }
+      throw error;
     }
-    requireProtocolVersion(response, options.requiredProtocolVersion);
-    if (!response.ok) {
-      throw rejectedResponse(response);
-    }
-    await verifyServerProof(response, token, timestamp, nonce, server.port);
-    return response;
   }
 
   const api = {

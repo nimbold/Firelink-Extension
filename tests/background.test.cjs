@@ -19,12 +19,14 @@ function createBackgroundContext(signedFetch, options = {}) {
   const cookieQueries = [];
   const downloadActions = [];
   const removedTabs = [];
+  const updatedTabs = [];
   const storageWrites = [];
   const alarmsCreated = [];
   const contextMenuItems = [];
   const executedScripts = [];
   const sentMessages = [];
   const listeners = {};
+  const observedDownloads = new Map();
   const deferredStorageCallbacks = [];
   let deferredStorageGetCount = 0;
   let persistedPendingCaptures = options.pendingCaptures || {};
@@ -33,46 +35,123 @@ function createBackgroundContext(signedFetch, options = {}) {
       onClicked: {
         addListener(listener) { listeners.contextMenu = listener; }
       },
-      create(item) { contextMenuItems.push(item); },
+      create(item) {
+        contextMenuItems.push(item);
+        if (options.promiseOnly) return Promise.resolve();
+        return undefined;
+      },
       removeAll(callback) {
         contextMenuItems.length = 0;
+        if (options.promiseOnly) return Promise.resolve();
         callback?.();
       }
     },
     cookies: {
       getAll(details, callback) {
         cookieQueries.push(details);
+        if (options.promiseOnly) {
+          return Promise.resolve(options.cookiesByUrl?.[details.url] || []);
+        }
         callback(options.cookiesByUrl?.[details.url] || []);
       },
       getAllCookieStores(callback) {
+        if (options.promiseOnly) {
+          return Promise.resolve(options.cookieStores || []);
+        }
         callback(options.cookieStores || []);
       }
     },
     downloads: {
       onCreated: {
-        addListener(listener) { listeners.downloadCreated = listener; }
+        addListener(listener) {
+          listeners.downloadCreated = downloadItem => {
+            observedDownloads.set(downloadItem.id, {
+              state: "in_progress",
+              paused: true,
+              ...downloadItem
+            });
+            return listener(downloadItem);
+          };
+        }
       },
       onChanged: {
         addListener(listener) { listeners.downloadChanged = listener; }
       },
       pause(id, callback) {
         downloadActions.push(["pause", id]);
+        if (options.downloadActionThrows === "pause") throw new Error("pause failed");
+        options.onDownloadAction?.("pause", id);
+        if (options.promiseOnly) {
+          return options.downloadActionErrors?.pause
+            ? Promise.reject(new Error(options.downloadActionErrors.pause))
+            : Promise.resolve();
+        }
+        if (options.downloadActionErrors?.pause) {
+          chrome.runtime.lastError = { message: options.downloadActionErrors.pause };
+        }
         callback();
+        chrome.runtime.lastError = null;
       },
       resume(id, callback) {
         downloadActions.push(["resume", id]);
+        if (options.downloadActionThrows === "resume") throw new Error("resume failed");
+        if (options.promiseOnly) {
+          return options.downloadActionErrors?.resume
+            ? Promise.reject(new Error(options.downloadActionErrors.resume))
+            : Promise.resolve();
+        }
+        if (options.downloadActionErrors?.resume) {
+          chrome.runtime.lastError = { message: options.downloadActionErrors.resume };
+        }
         callback();
+        chrome.runtime.lastError = null;
       },
       cancel(id, callback) {
         downloadActions.push(["cancel", id]);
+        if (options.downloadActionThrows === "cancel") throw new Error("cancel failed");
+        options.onDownloadAction?.("cancel", id);
+        if (options.promiseOnly) {
+          return options.downloadActionErrors?.cancel
+            ? Promise.reject(new Error(options.downloadActionErrors.cancel))
+            : Promise.resolve();
+        }
+        if (options.downloadActionErrors?.cancel) {
+          chrome.runtime.lastError = { message: options.downloadActionErrors.cancel };
+        }
         callback();
+        chrome.runtime.lastError = null;
       },
       erase(query, callback) {
         downloadActions.push(["erase", query]);
+        if (options.downloadActionThrows === "erase") throw new Error("erase failed");
+        if (options.promiseOnly) {
+          return options.downloadActionErrors?.erase
+            ? Promise.reject(new Error(options.downloadActionErrors.erase))
+            : Promise.resolve();
+        }
+        if (options.downloadActionErrors?.erase) {
+          chrome.runtime.lastError = { message: options.downloadActionErrors.erase };
+        }
         callback();
+        chrome.runtime.lastError = null;
       },
       search(query, callback) {
-        const item = options.downloadsById?.[query.id];
+        if (options.downloadSearchThrows) throw new Error("download search failed");
+        if (options.downloadSearchError) {
+          if (options.promiseOnly) {
+            return Promise.reject(new Error(options.downloadSearchError));
+          }
+          chrome.runtime.lastError = { message: options.downloadSearchError };
+          callback([]);
+          chrome.runtime.lastError = null;
+          return;
+        }
+        const item = options.downloadsById?.[query.id] || observedDownloads.get(query.id);
+        if (item && item.paused === undefined) item.paused = true;
+        if (item && item.state === undefined) item.state = "in_progress";
+        if (options.promiseOnly) {
+          return Promise.resolve(item ? [item] : []);
+        }
         callback(item ? [item] : []);
       }
     },
@@ -102,6 +181,11 @@ function createBackgroundContext(signedFetch, options = {}) {
     scripting: {
       executeScript(details, callback) {
         executedScripts.push(details);
+        if (options.promiseOnly) {
+          return options.scriptInjectionError
+            ? Promise.reject(new Error(options.scriptInjectionError))
+            : Promise.resolve([]);
+        }
         chrome.runtime.lastError = options.scriptInjectionError
           ? { message: options.scriptInjectionError }
           : null;
@@ -119,6 +203,17 @@ function createBackgroundContext(signedFetch, options = {}) {
             pendingAutomaticCaptures: persistedPendingCaptures,
             ...options.settings
           };
+          if (options.promiseOnly) {
+            if (Object.prototype.hasOwnProperty.call(options, "storageGetResult")) {
+              return Promise.resolve(options.storageGetResult);
+            }
+            if (options.storageGetErrorOnPending
+              && Array.isArray(_keys)
+              && _keys.includes("pendingAutomaticCaptures")) {
+              return Promise.reject(new Error(options.storageGetErrorOnPending));
+            }
+            return Promise.resolve(result);
+          }
           if (options.deferStorageGet && (
             !options.deferStorageGetOnce || deferredStorageGetCount++ === 0
           )) {
@@ -129,15 +224,31 @@ function createBackgroundContext(signedFetch, options = {}) {
             });
           } else if (Object.prototype.hasOwnProperty.call(options, "storageGetResult")) {
             callback(options.storageGetResult);
+          } else if (options.storageGetErrorOnPending
+            && Array.isArray(_keys)
+            && _keys.includes("pendingAutomaticCaptures")) {
+            chrome.runtime.lastError = { message: options.storageGetErrorOnPending };
+            callback({});
+            chrome.runtime.lastError = null;
           } else {
             callback(result);
           }
         },
         set(value, callback) {
           storageWrites.push(value);
+          options.beforeStorageSet?.(value);
           const storageSetFailed = options.storageSetError
             || (options.storageSetErrorAfter !== undefined
               && storageWrites.length > options.storageSetErrorAfter);
+          if (options.promiseOnly) {
+            if (storageSetFailed) {
+              return Promise.reject(new Error(options.storageSetError || "storage unavailable"));
+            }
+            if (Object.prototype.hasOwnProperty.call(value, "pendingAutomaticCaptures")) {
+              persistedPendingCaptures = value.pendingAutomaticCaptures;
+            }
+            return Promise.resolve();
+          }
           if (storageSetFailed) {
             chrome.runtime.lastError = {
               message: options.storageSetError || "storage unavailable"
@@ -155,6 +266,7 @@ function createBackgroundContext(signedFetch, options = {}) {
     },
     tabs: {
       query(_queryInfo, callback) {
+        if (options.promiseOnly) return Promise.resolve(options.activeTabs || []);
         callback(options.activeTabs || []);
       },
       create(details, callback) {
@@ -166,6 +278,11 @@ function createBackgroundContext(signedFetch, options = {}) {
           callback?.({ id: createdTabs.length });
           chrome.runtime.lastError = null;
         };
+        if (options.promiseOnly) {
+          return options.protocolError
+            ? Promise.reject(new Error(options.protocolError))
+            : Promise.resolve({ id: createdTabs.length });
+        }
         if (options.deferTabCreate) {
           Promise.resolve().then(complete);
         } else {
@@ -174,14 +291,27 @@ function createBackgroundContext(signedFetch, options = {}) {
       },
       remove(id, callback) {
         removedTabs.push(id);
+        if (options.promiseOnly) return Promise.resolve();
         if (options.deferTabRemove) {
           options.deferTabRemove(() => callback?.());
         } else {
           callback?.();
         }
       },
+      update(id, details, callback) {
+        updatedTabs.push({ id, details });
+        if (options.promiseOnly) {
+          return Promise.resolve({ id, ...details });
+        }
+        callback?.({ id, ...details });
+      },
       sendMessage(tabId, message, callback) {
         sentMessages.push({ tabId, message });
+        if (options.promiseOnly) {
+          return options.sendMessageError
+            ? Promise.reject(new Error(options.sendMessageError))
+            : Promise.resolve(options.selectionResponse || { links: [] });
+        }
         chrome.runtime.lastError = options.sendMessageError
           ? { message: options.sendMessageError }
           : null;
@@ -214,6 +344,7 @@ function createBackgroundContext(signedFetch, options = {}) {
     createdNotifications,
     createdTabs,
     removedTabs,
+    updatedTabs,
     storageWrites,
     alarmsCreated,
     cookieQueries,
@@ -230,6 +361,28 @@ test("starts without unsupported Firefox notification button APIs", () => {
   const fixture = createBackgroundContext(async () => ({ ok: true }));
   assert.equal(typeof fixture.listeners.contextMenu, "function");
   assert.equal(typeof fixture.listeners.downloadCreated, "function");
+});
+
+test("supports Promise-based WebExtensions APIs for automatic capture", async () => {
+  let payload = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, { promiseOnly: true });
+
+  await fixture.listeners.downloadCreated({
+    id: 66,
+    url: "https://example.com/file.zip",
+    referrer: "https://example.com/page",
+    filename: "/tmp/file.zip"
+  });
+
+  assert.equal(payload?.urls?.[0], "https://example.com/file.zip");
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.downloadActions)), [
+    ["pause", 66],
+    ["cancel", 66],
+    ["erase", { id: 66 }]
+  ]);
 });
 
 test("localizes and refreshes IDM-style browser context menus", async () => {
@@ -385,6 +538,33 @@ test("creating launch tab is not success when authenticated discovery times out"
   assert.equal(fixture.createdTabs[0].active, true);
   assert.deepEqual(fixture.removedTabs, [1]);
   assert.equal(fixture.createdNotifications.at(-1)[0].title, "Firelink Was Not Opened");
+});
+
+test("launch fallback reports an invalid pairing token instead of a startup timeout", async () => {
+  let firstRequest = true;
+  const fixture = createBackgroundContext(async path => {
+    if (path === "/download" && firstRequest) {
+      firstRequest = false;
+      throw { serverReached: false, requestMayHaveBeenSent: false };
+    }
+    throw { serverReached: true, status: 403 };
+  });
+
+  const accepted = await vm.runInContext(
+    'sendToFirelink(["https://example.com/file.zip"])',
+    fixture.context
+  );
+
+  assert.equal(accepted, false);
+  assert.equal(fixture.createdNotifications.at(-1)[0].title, "Firelink Connection Rejected");
+  assert.doesNotMatch(
+    fixture.createdNotifications.at(-1)[0].message,
+    /browser could not open Firelink/i
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(fixture.storageWrites.at(-1))),
+    { launchTimeoutCount: 0, launchCooldownUntil: 0 }
+  );
 });
 
 test("ambiguous POST failure never launches or resends", async () => {
@@ -669,6 +849,120 @@ test("automatic capture waits for a stabilized filename after a weak initial nam
   ]);
 });
 
+test("duplicate download-created events do not orphan the original filename waiter", async () => {
+  let handoffCalls = 0;
+  const fixture = createBackgroundContext(async () => {
+    handoffCalls += 1;
+    return { ok: true };
+  });
+
+  const firstCapture = fixture.listeners.downloadCreated({
+    id: 80,
+    url: "https://example.com/file.zip",
+    referrer: "https://example.com/page",
+    filename: "/tmp/identifier"
+  });
+  for (let attempt = 0; attempt < 20 && fixture.downloadActions.length === 0; attempt += 1) {
+    await new Promise(resolve => setImmediate(resolve));
+  }
+
+  await fixture.listeners.downloadCreated({
+    id: 80,
+    url: "https://example.com/file.zip",
+    referrer: "https://example.com/page",
+    filename: "/tmp/identifier"
+  });
+  fixture.listeners.downloadChanged({
+    id: 80,
+    filename: { current: "/Users/test/Downloads/file.zip" }
+  });
+  await firstCapture;
+
+  assert.equal(handoffCalls, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.downloadActions)), [
+    ["pause", 80],
+    ["cancel", 80],
+    ["erase", { id: 80 }]
+  ]);
+});
+
+test("automatic capture does not cancel a browser download the user resumes during handoff", async () => {
+  let releaseHandoff;
+  let handoffStarted;
+  const handoffStartedPromise = new Promise(resolve => { handoffStarted = resolve; });
+  const handoffReleasePromise = new Promise(resolve => { releaseHandoff = resolve; });
+  const fixture = createBackgroundContext(async path => {
+    if (path === "/download") {
+      handoffStarted();
+      await handoffReleasePromise;
+    }
+    return { ok: true };
+  });
+
+  const capture = fixture.listeners.downloadCreated({
+    id: 29,
+    url: "https://example.com/file.zip",
+    referrer: "https://example.com/page",
+    filename: "/tmp/file.zip"
+  });
+  await handoffStartedPromise;
+  fixture.listeners.downloadChanged({ id: 29, paused: { current: false } });
+  releaseHandoff();
+  await capture;
+
+  assert.deepEqual(fixture.downloadActions, [["pause", 29]]);
+  assert.equal(fixture.getPendingCaptures()["29"]?.phase, "uncertain");
+  assert.ok(fixture.createdNotifications.some(args => /Handoff Needs Attention/.test(args[0].title)));
+});
+
+test("automatic capture abandons a download that completes before handoff", async () => {
+  let handoffCalls = 0;
+  const fixture = createBackgroundContext(async () => {
+    handoffCalls += 1;
+    return { ok: true };
+  });
+
+  const capture = fixture.listeners.downloadCreated({
+    id: 30,
+    url: "https://example.com/file.zip",
+    referrer: "https://example.com/page",
+    filename: "/tmp/identifier"
+  });
+  for (let attempt = 0; attempt < 20 && fixture.downloadActions.length === 0; attempt += 1) {
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  fixture.listeners.downloadChanged({ id: 30, state: { current: "complete" } });
+  await capture;
+
+  assert.equal(handoffCalls, 0);
+  assert.deepEqual(fixture.downloadActions, [["pause", 30]]);
+  assert.equal(fixture.getPendingCaptures()["30"], undefined);
+});
+
+test("automatic capture does not recapture a download the user resumes while waiting for its filename", async () => {
+  let handoffCalls = 0;
+  const fixture = createBackgroundContext(async () => {
+    handoffCalls += 1;
+    return { ok: true };
+  });
+
+  const capture = fixture.listeners.downloadCreated({
+    id: 31,
+    url: "https://example.com/file.zip",
+    referrer: "https://example.com/page",
+    filename: "/tmp/identifier"
+  });
+  for (let attempt = 0; attempt < 20 && fixture.downloadActions.length === 0; attempt += 1) {
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  fixture.listeners.downloadChanged({ id: 31, paused: { current: false } });
+  await capture;
+
+  assert.equal(handoffCalls, 0);
+  assert.deepEqual(fixture.downloadActions, [["pause", 31]]);
+  assert.equal(fixture.getPendingCaptures()["31"], undefined);
+});
+
 test("automatic capture leaves the browser download paused when handoff delivery is ambiguous", async () => {
   const fixture = createBackgroundContext(async () => {
     throw { serverReached: true, status: 504 };
@@ -683,6 +977,85 @@ test("automatic capture leaves the browser download paused when handoff delivery
 
   assert.deepEqual(JSON.parse(JSON.stringify(fixture.downloadActions)), [["pause", 10]]);
   assert.match(fixture.createdNotifications[0][0].title, /Handoff Needs Attention/);
+});
+
+test("automatic capture retains an accepted record when browser cancellation fails", async () => {
+  const fixture = createBackgroundContext(async () => ({ ok: true }), {
+    downloadActionErrors: { cancel: "download changed" }
+  });
+
+  await fixture.listeners.downloadCreated({
+    id: 32,
+    url: "https://example.com/file.zip",
+    referrer: "https://example.com/page",
+    filename: "/tmp/file.zip"
+  });
+
+  assert.deepEqual(fixture.downloadActions, [["pause", 32], ["cancel", 32]]);
+  assert.equal(fixture.getPendingCaptures()["32"]?.phase, "uncertain");
+  assert.ok(fixture.createdNotifications.some(args => /Handoff Needs Attention/.test(args[0].title)));
+});
+
+test("automatic capture does not erase a download resumed during cleanup", async () => {
+  let fixture;
+  fixture = createBackgroundContext(async () => ({ ok: true }), {
+    onDownloadAction(action, id) {
+      if (action === "cancel") {
+        fixture.listeners.downloadChanged({ id, paused: { current: false } });
+      }
+    }
+  });
+
+  await fixture.listeners.downloadCreated({
+    id: 33,
+    url: "https://example.com/file.zip",
+    referrer: "https://example.com/page",
+    filename: "/tmp/file.zip"
+  });
+
+  assert.deepEqual(fixture.downloadActions, [["pause", 33], ["cancel", 33]]);
+  assert.equal(fixture.getPendingCaptures()["33"]?.phase, "uncertain");
+  assert.ok(fixture.createdNotifications.some(args => /Handoff Needs Attention/.test(args[0].title)));
+});
+
+test("ignores the terminal event caused by its own automatic cancellation", async () => {
+  let fixture;
+  fixture = createBackgroundContext(async () => ({ ok: true }), {
+    onDownloadAction(action, id) {
+      if (action === "cancel") {
+        fixture.listeners.downloadChanged({ id, state: { current: "interrupted" } });
+      }
+    }
+  });
+
+  await fixture.listeners.downloadCreated({
+    id: 35,
+    url: "https://example.com/file.zip",
+    referrer: "https://example.com/page",
+    filename: "/tmp/file.zip"
+  });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.downloadActions)), [
+    ["pause", 35],
+    ["cancel", 35],
+    ["erase", { id: 35 }]
+  ]);
+  assert.equal(fixture.getPendingCaptures()["35"], undefined);
+});
+
+test("manual ambiguous handoffs do not claim that no download was added", async () => {
+  const fixture = createBackgroundContext(async () => {
+    throw { serverReached: true, status: 504 };
+  });
+
+  const accepted = await fixture.context.sendToFirelink(
+    ["https://example.com/file.zip"],
+    "https://example.com/page"
+  );
+
+  assert.equal(accepted, false);
+  assert.match(fixture.createdNotifications[0][0].message, /may have received/i);
+  assert.doesNotMatch(fixture.createdNotifications[0][0].message, /No download was added/i);
 });
 
 test("automatic capture keeps the original paused when a launched handoff is ambiguous", async () => {
@@ -929,6 +1302,52 @@ test("storage startup errors do not leave a new download paused", async () => {
   assert.deepEqual(fixture.downloadActions, []);
 });
 
+test("pending-state read errors do not erase or mutate a persisted capture", async () => {
+  const pending = {
+    "62": {
+      id: 62,
+      url: "https://example.com/file.zip",
+      referrer: "https://example.com/page",
+      filename: "file.zip",
+      phase: "ready"
+    }
+  };
+  const fixture = createBackgroundContext(async () => ({ ok: true }), {
+    pendingCaptures: pending,
+    storageGetErrorOnPending: "storage unavailable",
+    downloadsById: {
+      62: {
+        id: 62,
+        url: "https://example.com/file.zip",
+        state: "in_progress",
+        paused: true,
+        filename: "/tmp/file.zip"
+      }
+    }
+  });
+
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(fixture.downloadActions, []);
+  assert.equal(fixture.getPendingCaptures()["62"]?.phase, "ready");
+});
+
+test("download inspection errors retain a paused capture for recovery", async () => {
+  const fixture = createBackgroundContext(async () => ({ ok: true }), {
+    downloadSearchError: "downloads unavailable"
+  });
+
+  await fixture.listeners.downloadCreated({
+    id: 63,
+    url: "https://example.com/file.zip",
+    referrer: "https://example.com/page",
+    filename: "/tmp/file.zip"
+  });
+
+  assert.deepEqual(fixture.downloadActions, [["pause", 63]]);
+  assert.equal(fixture.getPendingCaptures()["63"]?.phase, "ready");
+  assert.ok(fixture.alarmsCreated.length > 0);
+});
+
 test("a setting changed during startup is not overwritten by stale storage data", async () => {
   let releaseStorage;
   const fixture = createBackgroundContext(async () => ({ ok: true }), {
@@ -954,7 +1373,31 @@ test("a setting changed during startup is not overwritten by stale storage data"
   assert.deepEqual(fixture.downloadActions, []);
 });
 
-test("automatic capture resumes when pending-state persistence fails", async () => {
+test("automatic capture tracks a resume while settings are still loading", async () => {
+  let releaseStorage;
+  const fixture = createBackgroundContext(async () => ({ ok: true }), {
+    deferStorageGetOnce: true,
+    deferStorageGet(release) {
+      releaseStorage = release;
+    }
+  });
+
+  const capture = fixture.listeners.downloadCreated({
+    id: 22,
+    url: "https://example.com/file.zip",
+    referrer: "https://example.com/page",
+    filename: "/tmp/file.zip"
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  fixture.listeners.downloadChanged({ id: 22, paused: { current: false } });
+  releaseStorage();
+  await capture;
+
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.downloadActions)), []);
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.getPendingCaptures())), {});
+});
+
+test("automatic capture does not pause when initial pending-state persistence fails", async () => {
   const fixture = createBackgroundContext(async () => ({ ok: true }), {
     storageSetError: "storage unavailable"
   });
@@ -966,10 +1409,74 @@ test("automatic capture resumes when pending-state persistence fails", async () 
     filename: "/tmp/file.zip"
   });
 
-  assert.deepEqual(JSON.parse(JSON.stringify(fixture.downloadActions)), [
-    ["pause", 24],
-    ["resume", 24]
-  ]);
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.downloadActions)), []);
+});
+
+test("automatic capture does not re-pause a download resumed during ownership persistence", async () => {
+  let fixture;
+  let resumed = false;
+  fixture = createBackgroundContext(async () => ({ ok: true }), {
+    beforeStorageSet(value) {
+      if (!resumed && Object.prototype.hasOwnProperty.call(value, "pendingAutomaticCaptures")) {
+        resumed = true;
+        fixture.listeners.downloadChanged({ id: 25, paused: { current: false } });
+      }
+    }
+  });
+
+  await fixture.listeners.downloadCreated({
+    id: 25,
+    url: "https://example.com/file.zip",
+    referrer: "https://example.com/page",
+    filename: "/tmp/file.zip"
+  });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.downloadActions)), []);
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.getPendingCaptures())), {});
+});
+
+test("automatic capture restores a resume that races with the pause action", async () => {
+  let fixture;
+  fixture = createBackgroundContext(async () => ({ ok: true }), {
+    onDownloadAction(action, id) {
+      if (action === "pause") {
+        fixture.listeners.downloadChanged({ id, paused: { current: false } });
+      }
+    }
+  });
+
+  await fixture.listeners.downloadCreated({
+    id: 34,
+    url: "https://example.com/file.zip",
+    referrer: "https://example.com/page",
+    filename: "/tmp/file.zip"
+  });
+
+  assert.deepEqual(fixture.downloadActions, [["pause", 34], ["resume", 34]]);
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.getPendingCaptures())), {});
+});
+
+test("automatic capture does not pause after capture is disabled during ownership persistence", async () => {
+  let fixture;
+  let changed = false;
+  fixture = createBackgroundContext(async () => ({ ok: true }), {
+    beforeStorageSet(value) {
+      if (!changed && Object.prototype.hasOwnProperty.call(value, "pendingAutomaticCaptures")) {
+        changed = true;
+        fixture.listeners.storageChanged({ globalCapture: { newValue: false } }, "local");
+      }
+    }
+  });
+
+  await fixture.listeners.downloadCreated({
+    id: 20,
+    url: "https://example.com/file.zip",
+    referrer: "https://example.com/page",
+    filename: "/tmp/file.zip"
+  });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.downloadActions)), []);
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.getPendingCaptures())), {});
 });
 
 test("automatic capture resumes when a phase update cannot be persisted", async () => {
@@ -1046,6 +1553,136 @@ test("worker restart resumes a paused capture when its site is disabled", async 
 
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(fixture.downloadActions, [["resume", 19]]);
+});
+
+test("worker restart never acts on a reused download ID with a different source", async () => {
+  const fixture = createBackgroundContext(async () => ({ ok: true }), {
+    pendingCaptures: {
+      "60": {
+        id: 60,
+        url: "https://example.com/old-file.zip",
+        referrer: "https://example.com/page",
+        filename: "old-file.zip",
+        phase: "accepted"
+      }
+    },
+    downloadsById: {
+      60: {
+        id: 60,
+        url: "https://example.com/new-file.zip",
+        state: "in_progress",
+        paused: true,
+        filename: "/tmp/new-file.zip"
+      }
+    }
+  });
+
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(fixture.downloadActions, []);
+  assert.equal(fixture.getPendingCaptures()["60"], undefined);
+});
+
+test("worker restart does not re-pause a capture that was released before recovery", async () => {
+  const fixture = createBackgroundContext(async () => ({ ok: true }), {
+    pendingCaptures: {
+      "64": {
+        id: 64,
+        url: "https://example.com/file.zip",
+        referrer: "https://example.com/page",
+        filename: "file.zip",
+        phase: "ready"
+      }
+    },
+    downloadsById: {
+      64: {
+        id: 64,
+        url: "https://example.com/file.zip",
+        state: "in_progress",
+        paused: false,
+        filename: "/tmp/file.zip"
+      }
+    }
+  });
+
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(fixture.downloadActions, []);
+  assert.equal(fixture.getPendingCaptures()["64"], undefined);
+});
+
+test("worker restart rejects a matching URL with a different download creation identity", async () => {
+  const fixture = createBackgroundContext(async () => ({ ok: true }), {
+    pendingCaptures: {
+      "65": {
+        id: 65,
+        url: "https://example.com/file.zip",
+        referrer: "https://example.com/page",
+        filename: "file.zip",
+        startTime: "2026-08-26T08:00:00.000Z",
+        phase: "accepted"
+      }
+    },
+    downloadsById: {
+      65: {
+        id: 65,
+        url: "https://example.com/file.zip",
+        startTime: "2026-08-26T08:01:00.000Z",
+        state: "in_progress",
+        paused: true,
+        filename: "/tmp/file.zip"
+      }
+    }
+  });
+
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(fixture.downloadActions, []);
+  assert.equal(fixture.getPendingCaptures()["65"], undefined);
+});
+
+test("worker restart canonicalizes zero-padded pending download IDs before cleanup", async () => {
+  const fixture = createBackgroundContext(async () => ({ ok: true }), {
+    pendingCaptures: {
+      "000": {
+        id: 0,
+        url: "https://example.com/file.zip",
+        referrer: "https://example.com/page",
+        filename: "file.zip",
+        phase: "ready"
+      }
+    },
+    downloadsById: {
+      0: {
+        id: 0,
+        url: "https://example.com/file.zip",
+        state: "complete",
+        paused: true,
+        filename: "/tmp/file.zip"
+      }
+    }
+  });
+
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(fixture.downloadActions, []);
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.getPendingCaptures())), {});
+});
+
+test("malformed persisted pairing values do not pause browser downloads", async () => {
+  let handoffCalls = 0;
+  const fixture = createBackgroundContext(async () => {
+    handoffCalls += 1;
+    return { ok: true };
+  }, {
+    settings: { extensionToken: { value: "not-a-token" } }
+  });
+
+  await fixture.listeners.downloadCreated({
+    id: 61,
+    url: "https://example.com/file.zip",
+    referrer: "https://example.com/page",
+    filename: "/tmp/file.zip"
+  });
+
+  assert.equal(handoffCalls, 0);
+  assert.deepEqual(fixture.downloadActions, []);
 });
 
 test("worker restart resumes a disabled capture even when cleanup persistence fails", async () => {
@@ -1129,10 +1766,74 @@ test("worker restart safely retries a capture that never started sending", async
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(payload.filename, "file.zip");
   assert.deepEqual(JSON.parse(JSON.stringify(fixture.downloadActions)), [
-    ["pause", 15],
     ["cancel", 15],
     ["erase", { id: 15 }]
   ]);
+});
+
+test("worker restart never erases an accepted capture resumed during cleanup", async () => {
+  let fixture;
+  fixture = createBackgroundContext(async () => ({ ok: true }), {
+    pendingCaptures: {
+      "16": {
+        id: 16,
+        url: "https://example.com/file.zip",
+        referrer: "https://example.com/page",
+        filename: "file.zip",
+        phase: "accepted"
+      }
+    },
+    downloadsById: {
+      16: {
+        id: 16,
+        url: "https://example.com/file.zip",
+        state: "in_progress",
+        paused: true,
+        filename: "/tmp/file.zip"
+      }
+    },
+    onDownloadAction(action, id) {
+      if (action === "cancel") {
+        fixture.listeners.downloadChanged({ id, paused: { current: false } });
+      }
+    }
+  });
+
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.downloadActions)), [
+    ["cancel", 16]
+  ]);
+  assert.equal(fixture.getPendingCaptures()["16"]?.phase, "uncertain");
+});
+
+test("worker restart does not resume a terminal capture when capture is disabled", async () => {
+  const fixture = createBackgroundContext(async () => ({ ok: true }), {
+    settings: {
+      siteToggles: { "example.com": true }
+    },
+    pendingCaptures: {
+      "17": {
+        id: 17,
+        url: "https://example.com/file.zip",
+        referrer: "https://example.com/page",
+        filename: "file.zip",
+        phase: "ready"
+      }
+    },
+    downloadsById: {
+      17: {
+        id: 17,
+        url: "https://example.com/file.zip",
+        state: "interrupted",
+        paused: true,
+        filename: "/tmp/file.zip"
+      }
+    }
+  });
+
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(fixture.downloadActions, []);
+  assert.equal(fixture.getPendingCaptures()["17"], undefined);
 });
 
 test("automatic Google captures carry host-scoped cookies for redirected auth", async () => {
@@ -1236,6 +1937,33 @@ test("never falls back to normal-profile cookies when incognito storage is unava
     cookiesByUrl: {
       "https://example.com/private.zip": [
         { name: "session", value: "normal-session" }
+      ]
+    }
+  });
+
+  const accepted = await vm.runInContext(
+    'sendToFirelink(["https://example.com/private.zip"], "", { captureMode: "automatic", incognito: true })',
+    fixture.context
+  );
+
+  assert.equal(accepted, true);
+  assert.equal(payload.cookies, undefined);
+  assert.deepEqual(fixture.cookieQueries, []);
+});
+
+test("does not guess between multiple incognito cookie stores", async () => {
+  let payload = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, {
+    cookieStores: [
+      { id: "incognito-a", incognito: true },
+      { id: "incognito-b", incognito: true }
+    ],
+    cookiesByUrl: {
+      "https://example.com/private.zip": [
+        { name: "session", value: "wrong-container" }
       ]
     }
   });
@@ -1381,7 +2109,7 @@ test("selected-link context menu prefers extracted anchor links", async () => {
       selectionText: "https://fallback.example/ignored.zip"
     },
     {
-      id: 12,
+      id: 0,
       url: "https://example.com/page",
       title: "Example Gallery / Chapter: 1",
       cookieStoreId: "firefox-container-2"
@@ -1390,11 +2118,11 @@ test("selected-link context menu prefers extracted anchor links", async () => {
   await new Promise(resolve => setImmediate(resolve));
 
   assert.deepEqual(JSON.parse(JSON.stringify(fixture.executedScripts[0])), {
-    target: { tabId: 12 },
+    target: { tabId: 0 },
     files: ["content.js"]
   });
   assert.deepEqual(JSON.parse(JSON.stringify(fixture.sentMessages[0])), {
-    tabId: 12,
+    tabId: 0,
     message: { action: "extractSelectionLinks" }
   });
   assert.deepEqual(JSON.parse(JSON.stringify(payload)), {
@@ -1406,6 +2134,35 @@ test("selected-link context menu prefers extracted anchor links", async () => {
     batch: true,
     batch_name: "Example Gallery / Chapter: 1"
   });
+});
+
+test("selected-link context menu rejects malformed injected responses", async () => {
+  let payload = null;
+  const fixture = createBackgroundContext(
+    async (_path, _token, request) => {
+      payload = request.payload;
+      return { ok: true };
+    },
+    {
+      selectionResponse: { links: "not-an-array" }
+    }
+  );
+
+  fixture.listeners.contextMenu(
+    {
+      menuItemId: "download-selected-with-firelink",
+      selectionText: "(https://fallback.example/file.zip),"
+    },
+    {
+      id: 0,
+      url: "https://example.com/page"
+    }
+  );
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.deepEqual(JSON.parse(JSON.stringify(payload.urls)), [
+    "https://fallback.example/file.zip"
+  ]);
 });
 
 test("hands magnet links to Firelink through the existing link menu", async () => {
@@ -1429,6 +2186,97 @@ test("hands magnet links to Firelink through the existing link menu", async () =
   assert.equal(payload.urls[0], "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567");
   assert.equal(payload.torrent, true);
   assert.equal(requiredProtocolVersion, 5);
+});
+
+test("automatically hands a clicked magnet to Firelink when the app is running", async () => {
+  let payload = null;
+  let requiredProtocolVersion = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    requiredProtocolVersion = request.requiredProtocolVersion;
+    return { ok: true };
+  });
+
+  const response = await new Promise(resolve => {
+    const keepAlive = fixture.listeners.message(
+      {
+        action: "captureAutomaticMagnet",
+        url: "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"
+      },
+      { tab: { url: "https://example.com/page" } },
+      resolve
+    );
+    assert.equal(keepAlive, true);
+  });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(response)), { intercepted: true, ambiguous: false });
+  assert.equal(payload.torrent, true);
+  assert.equal(payload.silent, true);
+  assert.equal(requiredProtocolVersion, 5);
+  assert.deepEqual(fixture.cookieQueries, []);
+});
+
+test("definitely declined automatic magnets use the privileged browser fallback", async () => {
+  const fixture = createBackgroundContext(async () => ({ ok: true }), {
+    promiseOnly: true,
+    settings: { extensionToken: "" }
+  });
+
+  const response = await new Promise(resolve => {
+    fixture.listeners.message(
+      {
+        action: "captureAutomaticMagnet",
+        url: "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"
+      },
+      { tab: { id: 12, url: "https://example.com/page" } },
+      resolve
+    );
+  });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(response)), {
+    intercepted: true,
+    fallback: true,
+    ambiguous: false
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.updatedTabs)), [{
+    id: 12,
+    details: {
+      url: "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"
+    }
+  }]);
+});
+
+test("automatically hands a clicked magnet through launch fallback when the app is stopped", async () => {
+  let payload = null;
+  const calls = [];
+  let downloadAttempts = 0;
+  const fixture = createBackgroundContext(async (path, _token, request) => {
+    calls.push(path);
+    if (path === "/download" && downloadAttempts++ === 0) {
+      throw { serverReached: false, requestMayHaveBeenSent: false };
+    }
+    if (path === "/download") {
+      payload = request.payload;
+    }
+    return { ok: true };
+  });
+
+  const response = await new Promise(resolve => {
+    fixture.listeners.message(
+      {
+        action: "captureAutomaticMagnet",
+        url: "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"
+      },
+      { tab: { url: "https://example.com/page" } },
+      resolve
+    );
+  });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(response)), { intercepted: true, ambiguous: false });
+  assert.equal(payload.torrent, true);
+  assert.equal(fixture.createdTabs.length, 1);
+  assert.ok(calls.includes("/ping"));
+  assert.equal(calls.filter(path => path === "/download").length, 2);
 });
 
 test("keeps a mixed magnet selection as a batch while requiring magnet support", async () => {
@@ -1491,6 +2339,70 @@ test("hands an opaque torrent download with its settled filename", async () => {
   ]);
 });
 
+test("classifies an opaque torrent from its browser MIME type", async () => {
+  let payload = null;
+  let requiredProtocolVersion = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    requiredProtocolVersion = request.requiredProtocolVersion;
+    return { ok: true };
+  }, {
+    downloadsById: {
+      59: {
+        id: 59,
+        url: "https://example.com/download?id=opaque-torrent",
+        finalUrl: "https://cdn.example.com/download?id=opaque-torrent",
+        mime: "application/x-bittorrent; charset=binary",
+        referrer: "https://example.com/page",
+        filename: "/tmp/archive.bin"
+      }
+    }
+  });
+
+  await fixture.listeners.downloadCreated({
+    id: 59,
+    url: "https://example.com/download?id=opaque-torrent",
+    referrer: "https://example.com/page",
+    filename: "/tmp/archive.bin",
+    mime: "application/x-bittorrent; charset=binary"
+  });
+
+  assert.equal(payload.torrent, true);
+  assert.equal(requiredProtocolVersion, 5);
+});
+
+test("refreshes the current filename after the filename waiter expires", async () => {
+  let payload = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, {
+    setTimeout: callback => {
+      Promise.resolve().then(callback);
+      return 1;
+    },
+    downloadsById: {
+      68: {
+        id: 68,
+        url: "https://example.com/download?id=opaque-late-name",
+        state: "in_progress",
+        paused: true,
+        filename: "/Users/test/final.torrent"
+      }
+    }
+  });
+
+  await fixture.listeners.downloadCreated({
+    id: 68,
+    url: "https://example.com/download?id=opaque-late-name",
+    referrer: "https://example.com/page",
+    filename: "/tmp/identifier"
+  });
+
+  assert.equal(payload.torrent, true);
+  assert.equal(payload.filename, "final.torrent");
+});
+
 test("classifies a torrent reached through a redirected final URL", async () => {
   let payload = null;
   const fixture = createBackgroundContext(async (_path, _token, request) => {
@@ -1533,7 +2445,19 @@ test("keeps a stored redirected final URL when an unrelated URL delta arrives", 
         finalUrl: "https://cdn.example.com/assets/final.torrent",
         referrer: "https://example.com/page",
         filename: "final.torrent",
+        state: "in_progress",
+        paused: true,
         phase: "paused"
+      }
+    },
+    downloadsById: {
+      54: {
+        id: 54,
+        url: "https://example.com/download?id=redirected",
+        finalUrl: "https://cdn.example.com/assets/final.torrent",
+        filename: "/Users/test/Downloads/final.torrent",
+        state: "in_progress",
+        paused: true
       }
     }
   });
@@ -1611,6 +2535,25 @@ test("resumes a torrent download when the desktop protocol is too old", async ()
   ]);
 });
 
+test("keeps a torrent capture paused when a protocol rejection may follow delivery", async () => {
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    if (request.requiredProtocolVersion > 4) {
+      throw { serverReached: true, status: 426, requestMayHaveBeenSent: true };
+    }
+    return { ok: true };
+  });
+
+  await fixture.listeners.downloadCreated({
+    id: 81,
+    url: "https://example.com/sample.torrent",
+    referrer: "https://example.com/page",
+    filename: "/tmp/sample.torrent"
+  });
+
+  assert.deepEqual(fixture.downloadActions, [["pause", 81]]);
+  assert.equal(fixture.getPendingCaptures()["81"]?.phase, "uncertain");
+});
+
 test("truncates selected-link batch titles without splitting Unicode characters", async () => {
   let payload = null;
   const fixture = createBackgroundContext(
@@ -1670,6 +2613,23 @@ test("selected-link context menu falls back to selected text when tab is unavail
   });
 });
 
+test("preserves significant punctuation in browser-provided download URLs", async () => {
+  let payload = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  });
+
+  await vm.runInContext(
+    'sendToFirelink(["https://example.com/path:"])',
+    fixture.context
+  );
+
+  assert.deepEqual(JSON.parse(JSON.stringify(payload.urls)), [
+    "https://example.com/path:"
+  ]);
+});
+
 test("popup media fetch sends the active page without a full cookie header", async () => {
   let payload = null;
   let requiredProtocolVersion = null;
@@ -1701,7 +2661,7 @@ test("popup media fetch sends the active page without a full cookie header", asy
     assert.equal(keepAlive, true);
   });
 
-  assert.deepEqual(JSON.parse(JSON.stringify(response)), { ok: true });
+  assert.deepEqual(JSON.parse(JSON.stringify(response)), { ok: true, ambiguous: false });
   assert.deepEqual(JSON.parse(JSON.stringify(payload)), {
     urls: ["https://youtube.com/watch?v=abc"],
     referer: "https://youtube.com/watch?v=abc",
@@ -1767,6 +2727,43 @@ test("media context menu sends a clicked media page link with explicit media int
     media: true
   });
   assert.equal(requiredProtocolVersion, 4);
+});
+
+test("media intent wins over a torrent-looking page URL", async () => {
+  let payload = null;
+  let requiredProtocolVersion = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    requiredProtocolVersion = request.requiredProtocolVersion;
+    return { ok: true };
+  });
+
+  const result = await vm.runInContext(
+    'fetchMediaForTab({ url: "https://example.com/file.torrent" }, { notifyOnSuccess: false })',
+    fixture.context
+  );
+
+  assert.equal(result.accepted, true);
+  assert.equal(result.ambiguous, false);
+  assert.equal(payload.media, true);
+  assert.equal(payload.torrent, undefined);
+  assert.equal(requiredProtocolVersion, 4);
+});
+
+test("reports an ambiguous media handoff so the popup cannot blindly retry", async () => {
+  const fixture = createBackgroundContext(async () => {
+    throw { serverReached: true, status: 504 };
+  });
+
+  const result = await vm.runInContext(
+    'fetchMediaForTab({ url: "https://example.com/watch" }, { notifyOnFailure: false })',
+    fixture.context
+  );
+
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), {
+    accepted: false,
+    ambiguous: true
+  });
 });
 
 test("persists a filename update after a worker restart without an in-memory waiter", async () => {

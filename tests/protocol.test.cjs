@@ -239,9 +239,72 @@ test("discovers Firelink before sending signed download payload", async () => {
       download.options.headers["X-Firelink-Signature"],
       await generateHMAC(
         "secret",
-        "1710000000000",
+        download.options.headers["X-Firelink-Timestamp"],
         '{"urls":["https://example.com/file.zip"]}'
       )
+    );
+  } finally {
+    Date.now = originalNow;
+    global.fetch = originalFetch;
+  }
+});
+
+test("does not abort the winning discovery response", async () => {
+  const originalFetch = global.fetch;
+  const winnerSignals = [];
+  const { signedFetch } = loadProtocol();
+
+  global.fetch = async (url, options = {}) => {
+    if (url === "http://127.0.0.1:6414/ping") {
+      winnerSignals.push(options.signal);
+      return firelinkResponseForRequest(url, options);
+    }
+    throw new TypeError("Connection refused");
+  };
+
+  try {
+    await signedFetch("/ping", "secret");
+    assert.equal(winnerSignals.length, 1);
+    assert.equal(winnerSignals[0].aborted, false);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("uses distinct timestamps for concurrent identical handoffs", async () => {
+  const originalFetch = global.fetch;
+  const originalNow = Date.now;
+  const downloadRequests = [];
+  const { signedFetch } = loadProtocol();
+  Date.now = () => 1710000000000;
+
+  global.fetch = async (url, options = {}) => {
+    if (url.endsWith("/download")) {
+      downloadRequests.push(options);
+    }
+    return firelinkResponseForRequest(url, options);
+  };
+
+  try {
+    await Promise.all([
+      signedFetch("/download", "secret", {
+        method: "POST",
+        payload: { urls: ["https://example.com/file.zip"] }
+      }),
+      signedFetch("/download", "secret", {
+        method: "POST",
+        payload: { urls: ["https://example.com/file.zip"] }
+      })
+    ]);
+
+    assert.equal(downloadRequests.length, 2);
+    const timestamps = downloadRequests.map(request =>
+      request.headers["X-Firelink-Timestamp"]
+    );
+    assert.equal(new Set(timestamps).size, 2);
+    assert.notEqual(
+      downloadRequests[0].headers["X-Firelink-Signature"],
+      downloadRequests[1].headers["X-Firelink-Signature"]
     );
   } finally {
     Date.now = originalNow;
@@ -266,6 +329,33 @@ test("rejects a response that lacks Firelink identity", async () => {
       error => {
         assert.ok(error instanceof FirelinkRequestError);
         assert.equal(error.serverReached, false);
+        return true;
+      }
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("does not mark a foreign localhost response as a delivered download", async () => {
+  const originalFetch = global.fetch;
+  const { FirelinkRequestError, signedFetch } = loadProtocol();
+
+  global.fetch = async (url, options = {}) => {
+    if (url.endsWith("/ping")) return firelinkResponseForRequest(url, options);
+    return new Response(null, { status: 200 });
+  };
+
+  try {
+    await assert.rejects(
+      () => signedFetch("/download", "secret", {
+        method: "POST",
+        payload: { urls: ["https://example.com/file.zip"] }
+      }),
+      error => {
+        assert.ok(error instanceof FirelinkRequestError);
+        assert.equal(error.serverReached, true);
+        assert.equal(error.requestMayHaveBeenSent, false);
         return true;
       }
     );
