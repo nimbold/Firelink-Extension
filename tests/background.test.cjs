@@ -857,6 +857,54 @@ test("automatic capture waits for the browser pause state to settle before hando
   ]);
 });
 
+test("Firefox paused captures remain handoffable when interruption state is reported", async () => {
+  let payload = null;
+  let fixture;
+  const browserItem = {
+    id: 84,
+    url: "https://example.com/file.zip",
+    filename: "/tmp/file.zip",
+    state: "in_progress",
+    paused: false
+  };
+  fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, {
+    downloadsById: { 84: browserItem },
+    onDownloadAction(action, id) {
+      if (action !== "pause") {
+        return;
+      }
+
+      // Firefox exposes downloads.pause() as an interrupted, resumable item.
+      browserItem.state = "interrupted";
+      browserItem.paused = true;
+      browserItem.error = "USER_CANCELED";
+      browserItem.canResume = true;
+      // Firefox can deliver the state change without a paused delta.
+      fixture.listeners.downloadChanged({
+        id,
+        state: { current: "interrupted" }
+      });
+    }
+  });
+
+  await fixture.listeners.downloadCreated({
+    id: 84,
+    url: "https://example.com/file.zip",
+    referrer: "https://example.com/page",
+    filename: "/tmp/file.zip"
+  });
+
+  assert.equal(payload?.urls?.[0], "https://example.com/file.zip");
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.downloadActions)), [
+    ["pause", 84],
+    ["cancel", 84],
+    ["erase", { id: 84 }]
+  ]);
+});
+
 test("automatic capture uses browser metadata after filename settling", async () => {
   let payload = null;
   let fixture;
@@ -1078,9 +1126,22 @@ test("automatic capture retains an accepted record when browser cancellation fai
 
 test("automatic capture does not erase a download resumed during cleanup", async () => {
   let fixture;
+  const browserItem = {
+    id: 33,
+    url: "https://example.com/file.zip",
+    state: "in_progress",
+    paused: false,
+    filename: "/tmp/file.zip"
+  };
   fixture = createBackgroundContext(async () => ({ ok: true }), {
+    downloadsById: { 33: browserItem },
     onDownloadAction(action, id) {
-      if (action === "cancel") {
+      if (action === "pause") {
+        browserItem.state = "in_progress";
+        browserItem.paused = true;
+      } else if (action === "cancel") {
+        browserItem.paused = false;
+        browserItem.state = "in_progress";
         fixture.listeners.downloadChanged({ id, paused: { current: false } });
       }
     }
@@ -1096,6 +1157,44 @@ test("automatic capture does not erase a download resumed during cleanup", async
   assert.deepEqual(fixture.downloadActions, [["pause", 33], ["cancel", 33]]);
   assert.equal(fixture.getPendingCaptures()["33"]?.phase, "uncertain");
   assert.ok(fixture.createdNotifications.some(args => /Handoff Needs Attention/.test(args[0].title)));
+});
+
+test("automatic capture does not mistake Firefox cancellation for a user resume", async () => {
+  let fixture;
+  const browserItem = {
+    id: 85,
+    url: "https://example.com/file.zip",
+    state: "in_progress",
+    paused: false,
+    filename: "/tmp/file.zip"
+  };
+  fixture = createBackgroundContext(async () => ({ ok: true }), {
+    downloadsById: { 85: browserItem },
+    onDownloadAction(action, id) {
+      if (action === "pause") {
+        browserItem.state = "interrupted";
+        browserItem.paused = true;
+      } else if (action === "cancel") {
+        browserItem.state = "interrupted";
+        browserItem.paused = false;
+        fixture.listeners.downloadChanged({ id, paused: { current: false } });
+      }
+    }
+  });
+
+  await fixture.listeners.downloadCreated({
+    id: 85,
+    url: "https://example.com/file.zip",
+    referrer: "https://example.com/page",
+    filename: "/tmp/file.zip"
+  });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.downloadActions)), [
+    ["pause", 85],
+    ["cancel", 85],
+    ["erase", { id: 85 }]
+  ]);
+  assert.equal(fixture.getPendingCaptures()["85"], undefined);
 });
 
 test("ignores the terminal event caused by its own automatic cancellation", async () => {
@@ -1853,6 +1952,13 @@ test("worker restart safely retries a capture that never started sending", async
 
 test("worker restart never erases an accepted capture resumed during cleanup", async () => {
   let fixture;
+  const browserItem = {
+    id: 16,
+    url: "https://example.com/file.zip",
+    state: "in_progress",
+    paused: true,
+    filename: "/tmp/file.zip"
+  };
   fixture = createBackgroundContext(async () => ({ ok: true }), {
     pendingCaptures: {
       "16": {
@@ -1863,17 +1969,11 @@ test("worker restart never erases an accepted capture resumed during cleanup", a
         phase: "accepted"
       }
     },
-    downloadsById: {
-      16: {
-        id: 16,
-        url: "https://example.com/file.zip",
-        state: "in_progress",
-        paused: true,
-        filename: "/tmp/file.zip"
-      }
-    },
+    downloadsById: { 16: browserItem },
     onDownloadAction(action, id) {
       if (action === "cancel") {
+        browserItem.paused = false;
+        browserItem.state = "in_progress";
         fixture.listeners.downloadChanged({ id, paused: { current: false } });
       }
     }
@@ -1905,7 +2005,7 @@ test("worker restart does not resume a terminal capture when capture is disabled
         id: 17,
         url: "https://example.com/file.zip",
         state: "interrupted",
-        paused: true,
+        paused: false,
         filename: "/tmp/file.zip"
       }
     }
@@ -1914,6 +2014,74 @@ test("worker restart does not resume a terminal capture when capture is disabled
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(fixture.downloadActions, []);
   assert.equal(fixture.getPendingCaptures()["17"], undefined);
+});
+
+test("worker restart retries a Firefox paused interruption as an automatic capture", async () => {
+  let payload = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, {
+    pendingCaptures: {
+      "18": {
+        id: 18,
+        url: "https://example.com/file.zip",
+        referrer: "https://example.com/page",
+        filename: "file.zip",
+        phase: "ready"
+      }
+    },
+    downloadsById: {
+      18: {
+        id: 18,
+        url: "https://example.com/file.zip",
+        state: "interrupted",
+        paused: true,
+        error: "USER_CANCELED",
+        canResume: true,
+        filename: "/tmp/file.zip"
+      }
+    }
+  });
+
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(payload?.filename, "file.zip");
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.downloadActions)), [
+    ["cancel", 18],
+    ["erase", { id: 18 }]
+  ]);
+});
+
+test("pending Firefox interruption events do not delete a still-paused capture", async () => {
+  const browserItem = {
+    id: 86,
+    url: "https://example.com/file.zip",
+    state: "interrupted",
+    paused: true,
+    error: "USER_CANCELED",
+    canResume: true,
+    filename: "/tmp/file.zip"
+  };
+  const fixture = createBackgroundContext(async () => ({ ok: true }), {
+    downloadsById: { 86: browserItem }
+  });
+
+  await new Promise(resolve => setImmediate(resolve));
+  fixture.getPendingCaptures()["86"] = {
+    id: 86,
+    url: "https://example.com/file.zip",
+    referrer: "https://example.com/page",
+    filename: "file.zip",
+    phase: "ready"
+  };
+
+  // The paused=false delta can be delivered separately from Firefox's
+  // interruption state. The current snapshot is still paused and resumable.
+  fixture.listeners.downloadChanged({ id: 86, paused: { current: false } });
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(fixture.getPendingCaptures()["86"]?.phase, "ready");
 });
 
 test("automatic Google captures carry host-scoped cookies for redirected auth", async () => {

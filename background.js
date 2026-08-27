@@ -596,7 +596,8 @@ function beginAutomaticCapture(downloadId) {
     handoffStarted: false,
     handoffMayHaveBeenSent: false,
     cleanupStarted: false,
-    cleanupTerminalExpected: false
+    cleanupTerminalExpected: false,
+    pendingChangeReconciliation: Promise.resolve()
   };
   activeAutomaticCaptures.set(downloadId, session);
   return session;
@@ -610,14 +611,14 @@ function noteAutomaticCaptureChange(
   if (!session) {
     return false;
   }
-  if (resumed) {
-    session.userResumed = true;
-  }
   // A terminal event caused by our own cancel/erase is expected during the
   // cleanup window. A resume is always user intent and must be observed even
   // while cleanup is in flight.
   const expectedCancellation = session.cleanupTerminalExpected
     && terminalState === "interrupted";
+  if (resumed && !expectedCancellation) {
+    session.userResumed = true;
+  }
   if (terminal && !expectedCancellation) {
     session.terminal = true;
   }
@@ -669,7 +670,70 @@ function pendingCaptureMatchesDownload(record, downloadItem) {
 }
 
 function isTerminalDownload(downloadItem) {
-  return downloadItem?.state === "complete" || downloadItem?.state === "interrupted";
+  if (downloadItem?.state === "complete") {
+    return true;
+  }
+
+  // Firefox reports a paused download as `state: "interrupted"` with
+  // `paused: true` (and may expose USER_CANCELED as its interruption reason).
+  // The paused flag is the authoritative lifecycle signal here: treating all
+  // interrupted items as terminal prevents the handoff and strands the
+  // browser download in the paused state.
+  return downloadItem?.state === "interrupted" && downloadItem.paused !== true;
+}
+
+function isTerminalDownloadChange(change) {
+  const state = change?.state?.current;
+  if (state === "complete") {
+    return true;
+  }
+
+  // A state-only Firefox interruption event is ambiguous until the current
+  // download snapshot is inspected. Do not invalidate an active capture
+  // unless the event explicitly says that the item is not paused.
+  return state === "interrupted" && change.paused?.current === false;
+}
+
+async function reconcileActiveAutomaticCaptureState(downloadId, session) {
+  if (activeAutomaticCaptures.get(downloadId) !== session) {
+    return;
+  }
+
+  let downloadItem;
+  try {
+    downloadItem = await findDownload(downloadId);
+  } catch (error) {
+    return;
+  }
+  if (activeAutomaticCaptures.get(downloadId) !== session) {
+    return;
+  }
+  if (!downloadItem) {
+    // A missing item caused by our own cancel/erase is an expected cleanup
+    // result. Outside cleanup it invalidates the active capture so no later
+    // response can make an operation against a reused browser ID.
+    if (!session.cleanupStarted) {
+      session.downloadMissing = true;
+    }
+    return;
+  }
+
+  const terminal = isTerminalDownload(downloadItem);
+  const resumed = downloadItem.paused === false && !terminal;
+  if (resumed || terminal) {
+    noteAutomaticCaptureChange(downloadId, {
+      resumed,
+      terminal,
+      terminalState: downloadItem.state
+    });
+    settleDownloadFilenameWait(downloadId);
+  }
+}
+
+function queueActiveAutomaticCaptureReconciliation(downloadId, session) {
+  const operation = session.pendingChangeReconciliation
+    .then(() => reconcileActiveAutomaticCaptureState(downloadId, session));
+  session.pendingChangeReconciliation = operation.catch(() => {});
 }
 
 async function findOwnedAutomaticDownload(record, session, { waitForPause = false } = {}) {
@@ -1587,6 +1651,12 @@ async function handleAutomaticCapture(
       if (!automaticCaptureInvalidated(session)) {
         session.cleanupTerminalExpected = true;
         const cancelled = await runDownloadAction("cancel", record.id);
+        // Firefox may report the cancellation as an interrupted item and may
+        // deliver a paused=false delta without a state delta. Reconcile the
+        // current browser snapshot before erase so that a genuine user resume
+        // cannot be mistaken for our own cancellation.
+        await session.pendingChangeReconciliation;
+        await reconcileActiveAutomaticCaptureState(record.id, session);
         if (cancelled && !session.userResumed && !session.terminal) {
           const erased = await runDownloadAction("erase", { id: record.id });
           if (erased && !session.userResumed && !session.terminal) {
@@ -1680,6 +1750,8 @@ async function recoverPendingCaptures() {
             if (!automaticCaptureInvalidated(session)) {
               session.cleanupTerminalExpected = true;
               const cancelled = await runDownloadAction("cancel", record.id);
+              await session.pendingChangeReconciliation;
+              await reconcileActiveAutomaticCaptureState(record.id, session);
               if (cancelled && !session.userResumed && !session.terminal) {
                 const erased = await runDownloadAction("erase", { id: record.id });
                 if (erased && !session.userResumed && !session.terminal) {
@@ -2173,17 +2245,25 @@ chrome.downloads.onChanged.addListener(change => {
   }
   const state = change.state?.current;
   const resumed = change.paused?.current === false;
-  const terminal = state === "complete" || state === "interrupted";
+  const terminal = isTerminalDownloadChange(change);
   if (resumed || terminal) {
     settleDownloadFilenameWait(change.id);
   }
 
   const active = activeAutomaticCaptures.has(change.id);
   if (active) {
+    const session = activeAutomaticCaptures.get(change.id);
     if (Object.keys(fields).length > 0) {
       void updatePendingCapture(change.id, fields).catch(() => {});
     }
-    if (resumed || terminal) {
+    const stateOnlyInterruption = state === "interrupted"
+      && change.paused?.current === undefined;
+    const cleanupResumeWithoutState = resumed
+      && session?.cleanupTerminalExpected
+      && state === undefined;
+    if (stateOnlyInterruption || cleanupResumeWithoutState) {
+      queueActiveAutomaticCaptureReconciliation(change.id, session);
+    } else if (resumed || terminal) {
       noteAutomaticCaptureChange(change.id, {
         resumed,
         terminal,
@@ -2202,7 +2282,19 @@ chrome.downloads.onChanged.addListener(change => {
       if (!downloadItem) {
         return;
       }
-      return reconcilePendingDownloadChange(change, downloadItem, fields, resumed, terminal);
+      // The event is only a delta. Firefox can report an interruption or a
+      // pause transition in separate events, so reconcile the persisted
+      // record against the current item rather than trusting stale booleans
+      // from the event that triggered this lookup.
+      const currentTerminal = isTerminalDownload(downloadItem);
+      const currentResumed = downloadItem.paused === false && !currentTerminal;
+      return reconcilePendingDownloadChange(
+        change,
+        downloadItem,
+        fields,
+        currentResumed,
+        currentTerminal
+      );
     })
     .catch(() => {
       schedulePendingCaptureRecovery();
