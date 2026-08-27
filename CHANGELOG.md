@@ -2,18 +2,28 @@
 
 All notable changes to Firelink Companion will be documented in this file.
 
-## [Unreleased]
+## [2.2.0] - 2026-08-27
+
+This release adds Torrent and magnet handoff and makes automatic browser captures more reliable across restarts, paused downloads, and changing filenames. It pairs with [Firelink 1.4.0](https://github.com/nimbold/Firelink/releases/tag/v1.4.0).
 
 ### New features
 
-- Add magnet links to the existing Firefox and Chromium link and selection context menus.
-- Hand `.torrent` downloads to Firelink's Add window after the browser filename settles, including remote URLs whose path is opaque.
-- Require the Firelink torrent handoff protocol so older desktop versions cannot treat torrent captures as ordinary downloads.
+- **Torrent and magnet handoff**
+  - Send magnet links from Firefox and Chromium link and selection context menus.
+  - Automatically recognize `.torrent` downloads and send them to Firelink's Add window after the browser settles the filename, including remote URLs with opaque paths.
+  - Keep Torrent captures paused until Firelink confirms receipt, so an ambiguous handoff does not create a duplicate download.
+  - Require the Torrent handoff protocol so older Firelink versions cannot mistake Torrent captures for ordinary downloads.
 
 ### Improvements
 
-- Keep browser torrent downloads paused until Firelink acknowledges receipt, and recover or retain them safely when delivery fails or is ambiguous.
-- Preserve authenticated browser headers, cookies, and cookie scopes for remote torrent metadata.
+- Preserve media-aware link context and capture metadata across service-worker restarts.
+- Recheck browser download ownership and the settled filename before handing off an automatic capture.
+- Improve handoff behavior across browser API variations, popup settings changes, malformed input, and Firelink startup or shutdown.
+
+### Fixes
+
+- Treat interrupted and paused Firefox downloads as recoverable captures instead of acting on stale browser state.
+- Prevent automatic captures from being duplicated, resumed too early, or cleaned up as the wrong browser download during pause, filename, and recovery races.
 
 ## [2.1.0] - 2026-07-29
 

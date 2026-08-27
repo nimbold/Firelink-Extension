@@ -20,11 +20,11 @@ Captured links open Firelink's Add window first. You can review them before star
 
 ## Status
 
-The current Companion release is [**2.1.0**](https://github.com/nimbold/Firelink-Extension/releases/tag/v2.1.0). It is compatible with [Firelink `1.3.0`](https://github.com/nimbold/Firelink/releases/tag/v1.3.0).
+The current Companion release is [**2.2.0**](https://github.com/nimbold/Firelink-Extension/releases/tag/v2.2.0). It is compatible with [Firelink `1.4.0`](https://github.com/nimbold/Firelink/releases/tag/v1.4.0).
 
-The project is actively maintained. Use the latest Companion release with the latest Firelink release.
+The project is actively maintained. Use the [latest Companion release](https://github.com/nimbold/Firelink-Extension/releases/latest) with the [latest Firelink release](https://github.com/nimbold/Firelink/releases/latest).
 
-Torrent handoff uses protocol version 5 and requires a paired Firelink build that supports the torrent handoff contract.
+Torrent handoff uses protocol version 5 and requires Firelink `1.4.0` or a newer build that supports the same contract.
 
 ## Installation
 
@@ -46,6 +46,7 @@ After installation:
 - Automatic capture for ordinary browser downloads.
 - Magnet links through the existing link and selection context menus.
 - Automatic `.torrent` handoff to Firelink's Add window, including authenticated browser sessions and opaque download URLs.
+- Paused Torrent captures that wait for Firelink confirmation before the browser download continues.
 - Batch selected links from page context menus.
 - Optional Firelink folders named from page titles.
 - Explicit **Fetch media** actions from the popup and context menu.
@@ -57,6 +58,7 @@ After installation:
 - Desktop identity checks before trusting localhost responses.
 - Safe fallback when Firelink is closed or rejects a handoff.
 - Recovery for interrupted or ambiguous captures without silent duplicates.
+- Recovery for interrupted and paused Firefox captures across service-worker restarts.
 - Safer popup state and automatic-capture handling when settings change during a handoff.
 - Dynamic local port discovery across `127.0.0.1:6412-6422`.
 
