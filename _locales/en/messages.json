@@ -1,0 +1,8 @@
+{
+  "extensionName": {
+    "message": "Firelink Companion"
+  },
+  "extensionDescription": {
+    "message": "Send browser downloads, links, and media pages to the Firelink desktop download manager."
+  }
+}

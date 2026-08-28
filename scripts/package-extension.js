@@ -7,6 +7,7 @@ const sharedEntries = [
   "background.js",
   "content.js",
   "icons",
+  "_locales",
   "popup",
   "protocol.js"
 ];

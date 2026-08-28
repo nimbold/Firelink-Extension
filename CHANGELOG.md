@@ -2,6 +2,20 @@
 
 All notable changes to Firelink Companion will be documented in this file.
 
+## [2.2.1] - 2026-08-28
+
+This release continues to pair with [Firelink 1.4.0](https://github.com/nimbold/Firelink/releases/tag/v1.4.0) and prepares the shared Chromium package for Microsoft Edge Add-ons.
+
+### New features
+
+- Add Chromium WebExtension localization metadata for English, Simplified Chinese, Hebrew, Persian, Ukrainian, and Russian so browser stores can detect the six supported listing languages.
+- Add an Edge Add-ons submission kit with localized listing descriptions, permission justifications, certification notes, privacy policy, and branded store artwork.
+
+### Improvements
+
+- Include `_locales` in both Firefox and Chromium packages while keeping the existing popup localization and Firelink 1.4.0 protocol contract unchanged.
+- Keep the stable popup and context-menu **Fetch media** flow; defer an in-page media button that would require ongoing site-specific maintenance.
+
 ## [2.2.0] - 2026-08-27
 
 This release adds Torrent and magnet handoff and makes automatic browser captures more reliable across restarts, paused downloads, and changing filenames. It pairs with [Firelink 1.4.0](https://github.com/nimbold/Firelink/releases/tag/v1.4.0).

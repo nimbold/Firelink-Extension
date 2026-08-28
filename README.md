@@ -20,7 +20,9 @@ Captured links open Firelink's Add window first. You can review them before star
 
 ## Status
 
-The current Companion release is [**2.2.0**](https://github.com/nimbold/Firelink-Extension/releases/tag/v2.2.0). It is compatible with [Firelink `1.4.0`](https://github.com/nimbold/Firelink/releases/tag/v1.4.0).
+The Companion package prepared here is **2.2.1**. It is compatible with [Firelink `1.4.0`](https://github.com/nimbold/Firelink/releases/tag/v1.4.0).
+
+Version 2.2.1 prepares the shared Chromium package for a public Microsoft Edge Add-ons listing. The Partner Center upload and Microsoft certification are still separate release steps; until the listing is certified, use the manual Chromium installation below. The submission material is kept in [`store/edge/listing.md`](store/edge/listing.md).
 
 The project is actively maintained. Use the [latest Companion release](https://github.com/nimbold/Firelink-Extension/releases/latest) with the [latest Firelink release](https://github.com/nimbold/Firelink/releases/latest).
 
@@ -32,6 +34,7 @@ Torrent handoff uses protocol version 5 and requires Firelink `1.4.0` or a newer
 
 - **Chromium browsers:** Download `firelink-chromium.zip` from [the latest release](https://github.com/nimbold/Firelink-Extension/releases/latest).
   Follow the [manual installation guide](#manual-chromium-installation).
+- **Microsoft Edge:** The Edge Add-ons listing is being prepared. Until it is published, download the same `firelink-chromium.zip` package and follow the manual guide.
 
 After installation:
 
@@ -62,6 +65,8 @@ After installation:
 - Safer popup state and automatic-capture handling when settings change during a handoff.
 - Dynamic local port discovery across `127.0.0.1:6412-6422`.
 
+The extension deliberately keeps media fetching in the popup and context menu instead of injecting an in-page player button. Browser sites frequently change their DOM and player behavior, and media can be exposed through site-specific, single-page, MSE, or blob-based paths that require ongoing maintenance.
+
 ## Handoff and privacy
 
 - Ordinary captures may use browser cookies when the browser session requires them.
@@ -80,9 +85,11 @@ script-injection, notification, and cookie APIs listed in `manifest.json`.
 Those permissions support the features above; the extension sends handoff data
 only to the paired Firelink app on localhost.
 
+For the Edge store listing, see the [privacy policy](PRIVACY.md) and the [submission kit](store/edge/listing.md).
+
 ## Manual Chromium installation
 
-Chromium builds are distributed as load-unpacked packages until a browser-store release is available.
+Chromium builds are distributed as load-unpacked packages until the Edge Add-ons listing is certified and published.
 
 1. Download `firelink-chromium.zip` from the [latest release](https://github.com/nimbold/Firelink-Extension/releases/latest).
 2. Extract the ZIP to a stable folder.

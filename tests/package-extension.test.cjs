@@ -9,6 +9,29 @@ const {
   chromiumManifest
 } = require("../scripts/package-extension.js");
 
+const rootDir = path.resolve(__dirname, "..");
+const localeDirectories = ["en", "zh_CN", "he", "fa", "uk", "ru"];
+
+function readJson(filePath) {
+  return JSON.parse(fs.readFileSync(filePath, "utf8"));
+}
+
+test("uses Chromium localization metadata for all supported languages", () => {
+  const manifest = readJson(path.join(rootDir, "manifest.json"));
+
+  assert.equal(manifest.name, "__MSG_extensionName__");
+  assert.equal(manifest.description, "__MSG_extensionDescription__");
+  assert.equal(manifest.default_locale, "en");
+
+  for (const locale of localeDirectories) {
+    const messages = readJson(path.join(rootDir, "_locales", locale, "messages.json"));
+
+    assert.equal(messages.extensionName.message, "Firelink Companion");
+    assert.ok(messages.extensionDescription.message.length <= 132);
+    assert.ok(messages.extensionDescription.message.length >= 20);
+  }
+});
+
 test("generates a Chromium Manifest V3 service worker manifest", () => {
   const manifest = chromiumManifest();
 
@@ -42,12 +65,23 @@ test("packages Firefox and Chromium load-unpacked directories", () => {
     assert.deepEqual(chromiumManifest.background, {
       service_worker: "chromium-service-worker.js"
     });
+    assert.equal(chromiumManifest.default_locale, "en");
+    assert.equal(chromiumManifest.name, "__MSG_extensionName__");
+    assert.equal(chromiumManifest.description, "__MSG_extensionDescription__");
     assert.equal(
       fs.readFileSync(path.join(outputRoot, "chromium", "chromium-service-worker.js"), "utf8").trim(),
       'importScripts("protocol.js", "popup/locales.js", "background.js");'
     );
     assert.ok(fs.existsSync(path.join(outputRoot, "firefox", "popup", "locales.js")));
     assert.ok(fs.existsSync(path.join(outputRoot, "chromium", "popup", "locales.js")));
+
+    for (const packageName of ["firefox", "chromium"]) {
+      for (const locale of localeDirectories) {
+        const messagesPath = path.join(outputRoot, packageName, "_locales", locale, "messages.json");
+        assert.ok(fs.existsSync(messagesPath), `${packageName} package is missing ${locale} messages`);
+        assert.equal(readJson(messagesPath).extensionName.message, "Firelink Companion");
+      }
+    }
   } finally {
     fs.rmSync(outputRoot, { recursive: true, force: true });
   }
