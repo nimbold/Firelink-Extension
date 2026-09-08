@@ -26,7 +26,9 @@ Version 2.2.1 prepares the shared Chromium package for a public Microsoft Edge A
 
 The project is actively maintained. Use the [latest Companion release](https://github.com/nimbold/Firelink-Extension/releases/latest) with the [latest Firelink release](https://github.com/nimbold/Firelink/releases/latest).
 
-Torrent handoff uses protocol version 5 and requires Firelink `1.4.0` or a newer build that supports the same contract.
+Remote Torrent and magnet handoff uses protocol version 5. Browser-local
+Torrent attachments use the binary handoff contract and require a Firelink
+build that supports it.
 
 ## Installation
 
@@ -48,7 +50,7 @@ After installation:
 
 - Automatic capture for ordinary browser downloads.
 - Magnet links through the existing link and selection context menus.
-- Automatic `.torrent` handoff to Firelink's Add window, including authenticated browser sessions and opaque download URLs.
+- Automatic `.torrent` handoff to Firelink's Add window, including authenticated browser sessions, opaque download URLs, and browser-local attachments.
 - Paused Torrent captures that wait for Firelink confirmation before the browser download continues.
 - Batch selected links from page context menus.
 - Optional Firelink folders named from page titles.

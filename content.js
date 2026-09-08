@@ -1,5 +1,13 @@
 (() => {
   const allowedSchemes = new Set(["http:", "https:", "ftp:", "sftp:", "magnet:"]);
+  const browserLocalTorrentSchemes = new Set(["blob:", "data:"]);
+  const torrentMimeTypes = new Set([
+    "application/bittorrent",
+    "application/x-bittorrent",
+    "application/x-torrent"
+  ]);
+  const maxTorrentBytes = 16 * 1024 * 1024;
+  const localTorrentReadTimeoutMs = 10_000;
   const maxSelectionLinks = 200;
   const automaticTorrentHandoffTimeoutMs = 25_000;
   let automaticTorrentRequestSequence = 0;
@@ -25,6 +33,88 @@
     return normalizedDownloadURL(rawURL);
   }
 
+  function rawAnchorURL(anchor) {
+    const rawURL = typeof anchor?.getAttribute === "function"
+      ? anchor.getAttribute("href")
+      : anchor?.href;
+    return typeof rawURL === "string" && rawURL.trim() !== "" ? rawURL : null;
+  }
+
+  function torrentFilenameFromAnchor(anchor) {
+    const value = typeof anchor?.getAttribute === "function"
+      ? anchor.getAttribute("download")
+      : anchor?.download;
+    if (typeof value !== "string" || value.trim() === "") {
+      return null;
+    }
+    const basename = value.trim().replace(/\\/g, "/").split("/").pop() || "";
+    return basename.toLowerCase().endsWith(".torrent") ? value.trim() : null;
+  }
+
+  function isTorrentMime(value) {
+    return typeof value === "string"
+      && torrentMimeTypes.has(value.split(";", 1)[0].trim().toLowerCase());
+  }
+
+  function browserLocalTorrentDescriptor(anchor) {
+    const rawURL = rawAnchorURL(anchor);
+    if (!rawURL) {
+      return null;
+    }
+
+    let url;
+    try {
+      url = new URL(rawURL, document.baseURI);
+    } catch (error) {
+      return null;
+    }
+    if (!browserLocalTorrentSchemes.has(url.protocol)) {
+      return null;
+    }
+
+    const filename = torrentFilenameFromAnchor(anchor);
+    const declaredMime = typeof anchor?.getAttribute === "function"
+      ? anchor.getAttribute("type")
+      : anchor?.type;
+    const dataMime = url.protocol === "data:"
+      ? url.pathname.split(",", 1)[0].split(";", 1)[0]
+      : "";
+    if (!filename && !isTorrentMime(declaredMime) && !isTorrentMime(dataMime)) {
+      return null;
+    }
+
+    return {
+      url: url.href,
+      local: true,
+      filename: filename || "download.torrent"
+    };
+  }
+
+  function pageSourceURL() {
+    const candidates = [
+      document.location?.href,
+      document.referrer,
+      window.location?.href
+    ];
+    try {
+      candidates.push(window.top?.location?.href);
+    } catch (error) {
+      // A cross-origin parent may expose no readable location to the frame.
+    }
+    for (const candidate of candidates) {
+      if (typeof candidate !== "string" || !candidate.trim()) continue;
+      try {
+        const url = new URL(candidate, document.baseURI);
+        if (["http:", "https:"].includes(url.protocol)) {
+          return url.href;
+        }
+      } catch (error) {
+        // Try the next frame/document URL.
+      }
+    }
+    return undefined;
+  }
+
   function isDirectTorrentURL(rawURL) {
     try {
       const url = new URL(rawURL);
@@ -37,6 +127,22 @@
 
   function isAutomaticTorrentURL(url) {
     return url?.toLowerCase().startsWith("magnet:") || isDirectTorrentURL(url);
+  }
+
+  function automaticTorrentDescriptor(anchor) {
+    const url = normalizedAnchorURL(anchor);
+    const filename = torrentFilenameFromAnchor(anchor);
+    const isDownloadAttributeTorrent = Boolean(filename)
+      && url
+      && ["http:", "https:"].includes(new URL(url).protocol);
+    if (url && (isAutomaticTorrentURL(url) || isDownloadAttributeTorrent)) {
+      return {
+        url,
+        local: false,
+        filename
+      };
+    }
+    return browserLocalTorrentDescriptor(anchor);
   }
 
   function automaticTorrentMessageAction(url) {
@@ -68,6 +174,107 @@
     return null;
   }
 
+  function anchorFromClickEvent(event) {
+    for (const target of event?.composedPath?.() || []) {
+      if (target?.tagName?.toLowerCase() === "a") {
+        return target;
+      }
+    }
+    return anchorFromEventTarget(event?.target);
+  }
+
+  function readResponseBytes(response) {
+    const contentLength = Number(response?.headers?.get?.("content-length"));
+    if (Number.isFinite(contentLength) && contentLength > maxTorrentBytes) {
+      throw new Error("Torrent attachment is too large");
+    }
+
+    if (response?.body?.getReader) {
+      const reader = response.body.getReader();
+      const chunks = [];
+      let total = 0;
+      return (async () => {
+        try {
+          while (true) {
+            const next = await reader.read();
+            if (next.done) break;
+            const chunk = next.value instanceof Uint8Array
+              ? next.value
+              : new Uint8Array(next.value);
+            total += chunk.byteLength;
+            if (total > maxTorrentBytes) {
+              await reader.cancel?.();
+              throw new Error("Torrent attachment is too large");
+            }
+            chunks.push(chunk);
+          }
+        } finally {
+          reader.releaseLock?.();
+        }
+
+        const bytes = new Uint8Array(total);
+        let offset = 0;
+        for (const chunk of chunks) {
+          bytes.set(chunk, offset);
+          offset += chunk.byteLength;
+        }
+        return bytes;
+      })();
+    }
+
+    return Promise.resolve(response.arrayBuffer()).then(buffer => {
+      if (buffer.byteLength === 0 || buffer.byteLength > maxTorrentBytes) {
+        throw new Error("Invalid torrent attachment size");
+      }
+      return new Uint8Array(buffer);
+    });
+  }
+
+  async function readBrowserLocalTorrent(url) {
+    const controller = typeof AbortController === "function"
+      ? new AbortController()
+      : null;
+    let timeout = null;
+    try {
+      const fetchOptions = controller ? { signal: controller.signal } : undefined;
+      const responsePromise = fetch(url, fetchOptions);
+      const response = await Promise.race([
+        responsePromise,
+        new Promise((_, reject) => {
+          timeout = setTimeout(() => {
+            controller?.abort();
+            reject(new Error("Torrent attachment read timed out"));
+          }, localTorrentReadTimeoutMs);
+        })
+      ]);
+      if (response?.ok === false) {
+        throw new Error("Could not read torrent attachment");
+      }
+      const bytes = await readResponseBytes(response);
+      if (bytes.byteLength === 0) {
+        throw new Error("Torrent attachment is empty");
+      }
+
+      // Use chunks whose size is divisible by three so independently encoded
+      // pieces can be concatenated without introducing interior padding.
+      const base64Chunks = [];
+      const chunkSize = 49_152;
+      for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+        const chunk = bytes.subarray(offset, Math.min(offset + chunkSize, bytes.length));
+        let binary = "";
+        for (let index = 0; index < chunk.length; index += 1) {
+          binary += String.fromCharCode(chunk[index]);
+        }
+        base64Chunks.push(btoa(binary));
+      }
+      return base64Chunks.join("");
+    } finally {
+      if (timeout !== null) {
+        clearTimeout(timeout);
+      }
+    }
+  }
+
   function replayAutomaticTorrentNavigation(anchor, url) {
     try {
       if (anchor && anchor.isConnected !== false && typeof anchor.click === "function") {
@@ -97,7 +304,7 @@
     globalThis.firelinkAutomaticTorrentClickHandlerInstalled = true;
 
     document.addEventListener("click", event => {
-      const anchor = anchorFromEventTarget(event.target);
+      const anchor = anchorFromClickEvent(event);
       if (!anchor || replayedAutomaticTorrentAnchors.has(anchor)) {
         replayedAutomaticTorrentAnchors.delete(anchor);
         return;
@@ -117,13 +324,15 @@
         return;
       }
 
-      const url = normalizedAnchorURL(anchor);
-      if (!url || !isAutomaticTorrentURL(url)) {
+      const descriptor = automaticTorrentDescriptor(anchor);
+      if (!descriptor) {
         return;
       }
       // Preserve the existing magnet behavior for links explicitly marked as
       // downloads, while direct .torrent downloads must still be captured.
-      if (url.toLowerCase().startsWith("magnet:") && anchor.hasAttribute?.("download")) {
+      if (!descriptor.local
+        && descriptor.url.toLowerCase().startsWith("magnet:")
+        && anchor.hasAttribute?.("download")) {
         return;
       }
 
@@ -134,23 +343,24 @@
       const target = anchor.getAttribute?.("target");
       const openInNewTab = typeof target === "string"
         && target.trim().toLowerCase() === "_blank";
-      const messageAction = automaticTorrentMessageAction(url);
-      const timeoutMessageAction = automaticTorrentTimeoutMessageAction(url);
+      const messageAction = automaticTorrentMessageAction(descriptor.url);
+      const timeoutMessageAction = automaticTorrentTimeoutMessageAction(descriptor.url);
       let settled = false;
+      let timeout = null;
       const replayOriginal = () => {
         if (settled) {
           return;
         }
-        clearTimeout(timeout);
+        if (timeout !== null) clearTimeout(timeout);
         settled = true;
         pendingAutomaticTorrentAnchors.delete(anchor);
-        replayAutomaticTorrentNavigation(anchor, url);
+        replayAutomaticTorrentNavigation(anchor, descriptor.url);
       };
       const reportAmbiguousCapture = () => {
         if (settled) {
           return;
         }
-        clearTimeout(timeout);
+        if (timeout !== null) clearTimeout(timeout);
         settled = true;
         pendingAutomaticTorrentAnchors.delete(anchor);
         try {
@@ -185,34 +395,57 @@
           pendingAutomaticTorrentAnchors.delete(anchor);
           return;
         }
-        clearTimeout(timeout);
+        if (timeout !== null) clearTimeout(timeout);
         settled = true;
         pendingAutomaticTorrentAnchors.delete(anchor);
         if (response?.intercepted !== true) {
-          replayAutomaticTorrentNavigation(anchor, url);
+          replayAutomaticTorrentNavigation(anchor, descriptor.url);
         }
       };
-      const timeout = setTimeout(
-        reportAmbiguousCapture,
-        automaticTorrentHandoffTimeoutMs
-      );
 
-      try {
-        const result = chrome.runtime.sendMessage(
-          { action: messageAction, requestId, url, openInNewTab },
-          response => {
-            completeCapture(response, chrome.runtime?.lastError || null);
-          }
-        );
-        if (result && typeof result.then === "function") {
-          result.then(
-            response => completeCapture(response),
-            error => completeCapture(null, error)
+      const sendCaptureMessage = message => {
+        if (settled) return;
+        timeout = setTimeout(reportAmbiguousCapture, automaticTorrentHandoffTimeoutMs);
+        try {
+          const result = chrome.runtime.sendMessage(
+            message,
+            response => {
+              completeCapture(response, chrome.runtime?.lastError || null);
+            }
           );
+          if (result && typeof result.then === "function") {
+            result.then(
+              response => completeCapture(response),
+              error => completeCapture(null, error)
+            );
+          }
+        } catch (error) {
+          replayOriginal();
         }
-      } catch (error) {
-        clearTimeout(timeout);
-        replayOriginal();
+      };
+
+      if (descriptor.local) {
+        void readBrowserLocalTorrent(descriptor.url).then(
+          torrentBytesBase64 => sendCaptureMessage({
+            action: messageAction,
+            requestId,
+            url: descriptor.url.length <= 4096 ? descriptor.url : undefined,
+            sourceURL: pageSourceURL(),
+            openInNewTab,
+            browserLocalTorrent: true,
+            filename: descriptor.filename,
+            torrentBytesBase64
+          }),
+          () => replayOriginal()
+        );
+      } else {
+        sendCaptureMessage({
+          action: messageAction,
+          requestId,
+          url: descriptor.url,
+          openInNewTab,
+          ...(descriptor.filename ? { filename: descriptor.filename } : {})
+        });
       }
     }, true);
   }

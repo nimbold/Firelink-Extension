@@ -21,6 +21,9 @@ const CAPTURE_FILENAME_SETTLE_TIMEOUT_MS = 2500;
 const CAPTURE_PAUSE_SETTLE_TIMEOUT_MS = 2500;
 const CAPTURE_PAUSE_SETTLE_INTERVAL_MS = 50;
 const TORRENT_CAPTURE_PROTOCOL_VERSION = 5;
+const TORRENT_BINARY_CAPTURE_PROTOCOL_VERSION = 6;
+const MAX_TORRENT_BYTES = 16 * 1024 * 1024;
+const MAX_ENCODED_TORRENT_BYTES = Math.ceil(MAX_TORRENT_BYTES / 3) * 4;
 const WEAK_CAPTURE_FILENAMES = new Set(["identifier", "download", "view", "uc"]);
 const TORRENT_MIME_TYPES = new Set([
   "application/bittorrent",
@@ -1304,6 +1307,22 @@ function isTorrentDownload(downloadItem, filename) {
     );
 }
 
+function isBrowserLocalTorrentURL(value) {
+  try {
+    return ["blob:", "data:"].includes(new URL(value).protocol);
+  } catch (error) {
+    return false;
+  }
+}
+
+function isValidTorrentBytesPayload(value) {
+  return typeof value === "string"
+    && value.length > 0
+    && value.length <= MAX_ENCODED_TORRENT_BYTES
+    && value.length % 4 === 0
+    && /^[A-Za-z0-9+/]*={0,2}$/.test(value);
+}
+
 function isDefiniteTorrentDownload(record, downloadItem, observedFields = {}) {
   const observedRecord = { ...record, ...observedFields };
   return isTorrentDownload(downloadItem, downloadItem?.filename)
@@ -1354,6 +1373,11 @@ async function sendToFirelink(urls, referer = "", options = {}) {
   const notifyOnFailure = options.notifyOnFailure !== false;
   const allowProtocolFallback = options.allowProtocolFallback !== false;
   const normalizedURLs = normalizeURLList(urls);
+  const hasTorrentBytes = options.torrentBytesBase64 !== undefined
+    && options.torrentBytesBase64 !== null;
+  if (hasTorrentBytes && !isValidTorrentBytesPayload(options.torrentBytesBase64)) {
+    return false;
+  }
   if (normalizedURLs.length === 0) {
     return false;
   }
@@ -1374,6 +1398,7 @@ async function sendToFirelink(urls, referer = "", options = {}) {
 
   const shouldForwardCookies = normalizedURLs.length === 1
     && !isMagnetURL(normalizedURLs[0])
+    && !hasTorrentBytes
     && (captureMode === "automatic" || options.forwardCookies === true);
   const cookieStoreId = shouldForwardCookies
     ? await resolveCookieStoreId(options)
@@ -1390,7 +1415,10 @@ async function sendToFirelink(urls, referer = "", options = {}) {
   // must not be mislabeled as one torrent request and rejected as a batch.
   const isTorrent = options.media !== true
     && normalizedURLs.length === 1
-    && (options.torrent === true || containsTorrentURL);
+    && (options.torrent === true || containsTorrentURL || hasTorrentBytes);
+  if (hasTorrentBytes && (options.media === true || !isTorrent)) {
+    return false;
+  }
   const payload = {
     urls: normalizedURLs,
     referer,
@@ -1403,7 +1431,8 @@ async function sendToFirelink(urls, referer = "", options = {}) {
       : `User-Agent: ${navigator.userAgent}`,
     cookies: cookieString || undefined,
     cookie_scopes: cookieScopes.length > 0 ? cookieScopes : undefined,
-    media: options.media === true
+    media: options.media === true,
+    torrent_bytes_base64: hasTorrentBytes ? options.torrentBytesBase64 : undefined
   };
   if (isTorrent) {
     payload.torrent = true;
@@ -1417,6 +1446,8 @@ async function sendToFirelink(urls, referer = "", options = {}) {
 
   const requiredProtocolVersion = options.media === true
     ? MEDIA_FETCH_PROTOCOL_VERSION
+    : hasTorrentBytes
+    ? TORRENT_BINARY_CAPTURE_PROTOCOL_VERSION
     : (isTorrent || containsTorrentURL || options.torrent === true)
     ? TORRENT_CAPTURE_PROTOCOL_VERSION
     : captureMode === "automatic" ? 3 : undefined;
@@ -1961,16 +1992,64 @@ async function recoverPendingCaptures() {
         // It is safe to hand off only while the record is still pre-delivery;
         // accepted, sending, and uncertain records must never be retried.
         if (isTerminalDownload(downloadItem)) {
-          if (isCompletedTorrentDownload(record, downloadItem)
+          const terminalFilenameWait = waitForDownloadFilename(downloadItem);
+          if (!isCompletedTorrentDownload(record, downloadItem)) {
+            const settledFilename = await terminalFilenameWait.promise;
+            if (settledFilename) {
+              record.filename = settledFilename;
+            }
+            let refreshedDownloadItem;
+            try {
+              refreshedDownloadItem = await findDownload(record.id);
+            } catch (error) {
+              terminalFilenameWait.cancel();
+              schedulePendingCaptureRecovery();
+              continue;
+            }
+            if (!refreshedDownloadItem) {
+              terminalFilenameWait.cancel();
+              const removed = await removePendingCapture(record.id);
+              if (!removed) {
+                schedulePendingCaptureRecovery();
+              }
+              continue;
+            }
+            if (!pendingCaptureMatchesDownload(record, refreshedDownloadItem)) {
+              terminalFilenameWait.cancel();
+              const removed = await removePendingCapture(record.id);
+              if (!removed) {
+                schedulePendingCaptureRecovery();
+              }
+              continue;
+            }
+            downloadItem = refreshedDownloadItem;
+          }
+
+          const recoveredTorrentDownload = isCompletedTorrentDownload(record, downloadItem);
+          if (recoveredTorrentDownload
             && automaticCaptureAllowedForDownload(record.url, record.referrer)) {
+            const recoveredDownloadItem = {
+              ...downloadItem,
+              url: record.url,
+              finalUrl: typeof downloadItem.finalUrl === "string"
+                ? downloadItem.finalUrl
+                : record.finalUrl,
+              referrer: record.referrer,
+              filename: isUsableCaptureFilename(downloadItem.filename)
+                ? normalizeCaptureFilename(downloadItem.filename)
+                : record.filename,
+              cookieStoreId: record.cookieStoreId,
+              incognito: record.incognito
+            };
             await handleAutomaticCapture(
               recoveredDownloadItem,
-              waitForDownloadFilename(recoveredDownloadItem),
+              terminalFilenameWait,
               record,
               session
             );
             continue;
           }
+          terminalFilenameWait.cancel();
           const removed = await removePendingCapture(record.id);
           if (!removed) {
             schedulePendingCaptureRecovery();
@@ -2122,14 +2201,76 @@ async function openAutomaticMagnetFallback(url, sender, openInNewTab = false) {
 }
 
 async function captureAutomaticTorrent(request, sender) {
+  const browserLocalTorrent = request?.browserLocalTorrent === true;
   const url = normalizeURL(request?.url || request?.href);
+  const referer = typeof sender?.tab?.url === "string" ? sender.tab.url : "";
+  if (browserLocalTorrent) {
+    const sourceURL = normalizePageMediaURL(request?.sourceURL || request?.sourceUrl)
+      || normalizePageMediaURL(referer);
+    const filename = typeof request?.filename === "string" ? request.filename : "";
+    const torrentBytesBase64 = request?.torrentBytesBase64;
+    if (typeof request?.url === "string" && !isBrowserLocalTorrentURL(request.url)) {
+      return { intercepted: false, ambiguous: false };
+    }
+    if (!sourceURL
+      || !isValidTorrentBytesPayload(torrentBytesBase64)
+      || !isTorrentFilename(filename)) {
+      return { intercepted: false, ambiguous: false };
+    }
+    await settingsLoaded;
+    // A blob/data document can be the sender tab's URL. It is not a site
+    // policy origin, so evaluate the page URL recovered by the content script
+    // instead of letting an opaque referrer bypass a site exclusion.
+    if (!automaticCaptureAllowedForDownload(sourceURL, sourceURL)) {
+      return { intercepted: false, ambiguous: false };
+    }
+
+    let requestMayHaveBeenSent = false;
+    let accepted = false;
+    try {
+      accepted = await sendToFirelink([sourceURL], sourceURL, {
+        allowProtocolFallback: true,
+        captureMode: "automatic",
+        notifyOnFailure: false,
+        torrent: true,
+        torrentBytesBase64,
+        filename,
+        onRequestMayHaveBeenSent: () => {
+          requestMayHaveBeenSent = true;
+        }
+      });
+    } catch (error) {
+      // The content script has already suppressed the browser action. Treat
+      // an unclassified transport failure as ambiguous because the signed
+      // request may have reached the desktop before the error surfaced.
+      requestMayHaveBeenSent = true;
+    }
+
+    const ambiguous = requestMayHaveBeenSent && !accepted;
+    if (ambiguous) {
+      notify(
+        backgroundText("notifications", "handoffFailedTitle", "Firelink Handoff Failed"),
+        backgroundText(
+          "notifications",
+          "ambiguousManual",
+          "Firelink may have received this download. Check Firelink before trying again."
+        )
+      );
+    }
+    return {
+      intercepted: accepted || ambiguous,
+      ambiguous
+    };
+  }
+
   const magnet = isMagnetURL(url);
   const torrent = isTorrentURL(url);
-  if (!url || (!magnet && !torrent)) {
+  const filename = typeof request?.filename === "string" ? request.filename : "";
+  const filenameTorrent = isTorrentFilename(filename);
+  if (!url || (!magnet && !torrent && !filenameTorrent)) {
     return { intercepted: false };
   }
 
-  const referer = typeof sender?.tab?.url === "string" ? sender.tab.url : "";
   await settingsLoaded;
   if (!automaticCaptureAllowedForDownload(url, referer)) {
     if (!magnet) {
@@ -2153,6 +2294,7 @@ async function captureAutomaticTorrent(request, sender) {
       incognito: sender?.tab?.incognito === true,
       notifyOnFailure: false,
       torrent: true,
+      filename: filename || undefined,
       onRequestMayHaveBeenSent: () => {
         requestMayHaveBeenSent = true;
       }
@@ -2457,7 +2599,9 @@ chrome.downloads.onChanged.addListener(change => {
   const state = change.state?.current;
   const terminal = isTerminalDownloadChange(change);
   const resumed = change.paused?.current === false && !terminal;
-  if (resumed || terminal) {
+  const terminalMetadataDefinitelyTorrent = isTorrentMime(change.mime?.current)
+    || isTorrentURL(change.finalUrl?.current);
+  if (resumed || terminalMetadataDefinitelyTorrent) {
     settleDownloadFilenameWait(change.id);
   }
 
@@ -2578,8 +2722,38 @@ chrome.downloads.onCreated.addListener(async downloadItem => {
   // A very small torrent can already be complete by the time onCreated is
   // delivered. It is still eligible for a one-time handoff, but must never
   // be sent through the pause/cancel/erase cleanup used for active items.
-  if (completedTorrent || downloadItem.state === "complete") {
-    await handleAutomaticCapture(downloadItem, filenameWait, record, session);
+  if (completedTorrent
+    || downloadItem.state === "complete"
+    || session.terminalState === "complete") {
+    if (!completedTorrent) {
+      // Firefox may deliver the terminal state before it publishes the final
+      // filename or MIME. Let the existing metadata waiter settle, then read
+      // the owned item again so opaque torrent downloads are not discarded
+      // merely because their initial name was weak.
+      const settledFilename = await filenameWait.promise;
+      if (settledFilename) {
+        record.filename = settledFilename;
+      }
+      completedTorrent = await findOwnedAutomaticDownload(record, session, {
+        allowCompletedTorrent: true
+      });
+    }
+    const isCompletedTorrent = completedTorrent
+      || isDefiniteTorrentDownload(record, downloadItem, session.observedDownloadFields);
+    if (isCompletedTorrent) {
+      await handleAutomaticCapture(downloadItem, filenameWait, record, session);
+      return;
+    }
+
+    // Completed ordinary files are outside the terminal torrent fallback.
+    // Drop only this verified record and leave the browser's completed file
+    // untouched.
+    const removed = await removePendingCapture(record.id);
+    if (!removed) {
+      schedulePendingCaptureRecovery();
+    }
+    activeAutomaticCaptures.delete(record.id);
+    filenameWait.cancel();
     return;
   }
 

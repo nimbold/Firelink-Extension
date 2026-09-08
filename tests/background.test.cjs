@@ -1370,6 +1370,79 @@ test("already-complete torrent downloads do not receive a pause action", async (
   assert.equal(fixture.getPendingCaptures()["36"], undefined);
 });
 
+test("already-complete ordinary downloads stay in the browser and are not handed off", async () => {
+  let handoffCalls = 0;
+  const fixture = createBackgroundContext(async () => {
+    handoffCalls += 1;
+    return { ok: true };
+  }, {
+    downloadsById: {
+      45: {
+        id: 45,
+        url: "https://example.com/already-complete.zip",
+        state: "complete",
+        paused: false,
+        filename: "/Users/test/already-complete.zip",
+        mime: "application/zip"
+      }
+    }
+  });
+
+  await fixture.listeners.downloadCreated({
+    id: 45,
+    url: "https://example.com/already-complete.zip",
+    referrer: "https://example.com/page",
+    state: "complete",
+    filename: "/Users/test/already-complete.zip",
+    mime: "application/zip"
+  });
+
+  assert.equal(handoffCalls, 0);
+  assert.deepEqual(fixture.downloadActions, []);
+  assert.equal(fixture.getPendingCaptures()["45"], undefined);
+});
+
+test("already-complete opaque torrents wait for a settled filename before handoff", async () => {
+  let payload = null;
+  const browserItem = {
+    id: 46,
+    url: "https://example.com/download?id=opaque-complete",
+    state: "complete",
+    paused: false,
+    filename: "/Users/test/identifier"
+  };
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, { downloadsById: { 46: browserItem } });
+
+  const capture = fixture.listeners.downloadCreated({
+    id: 46,
+    url: browserItem.url,
+    referrer: "https://example.com/page",
+    state: "complete",
+    filename: browserItem.filename
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  fixture.listeners.downloadChanged({
+    id: 46,
+    state: { current: "complete" },
+    paused: { current: false }
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  browserItem.filename = "/Users/test/opaque-complete.torrent";
+  fixture.listeners.downloadChanged({
+    id: 46,
+    filename: { current: browserItem.filename }
+  });
+  await capture;
+
+  assert.equal(payload?.torrent, true);
+  assert.equal(payload?.filename, "opaque-complete.torrent");
+  assert.deepEqual(fixture.downloadActions, []);
+  assert.equal(fixture.getPendingCaptures()["46"], undefined);
+});
+
 test("pause failure still hands off a torrent that completed before inspection", async () => {
   let payload = null;
   const fixture = createBackgroundContext(async (_path, _token, request) => {
@@ -2436,6 +2509,46 @@ test("worker recovery hands off a completed torrent without pausing or deleting 
   assert.equal(fixture.getPendingCaptures()["37"], undefined);
 });
 
+test("worker recovery waits for a late terminal torrent filename", async () => {
+  let payload = null;
+  const browserItem = {
+    id: 60,
+    url: "https://example.com/download?id=late-terminal-name",
+    state: "complete",
+    paused: false,
+    filename: "/Users/test/identifier"
+  };
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, {
+    pendingCaptures: {
+      "60": {
+        id: 60,
+        url: browserItem.url,
+        referrer: "https://example.com/page",
+        filename: "identifier",
+        phase: "ready"
+      }
+    },
+    downloadsById: { 60: browserItem }
+  });
+
+  await new Promise(resolve => setImmediate(resolve));
+  browserItem.filename = "/Users/test/late-terminal-name.torrent";
+  fixture.listeners.downloadChanged({
+    id: 60,
+    filename: { current: browserItem.filename },
+    state: { current: "complete" }
+  });
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(payload?.torrent, true);
+  assert.equal(payload?.filename, "late-terminal-name.torrent");
+  assert.deepEqual(fixture.downloadActions, []);
+  assert.equal(fixture.getPendingCaptures()["60"], undefined);
+});
+
 test("worker restart retries a Firefox paused interruption as an automatic capture", async () => {
   let payload = null;
   const fixture = createBackgroundContext(async (_path, _token, request) => {
@@ -2978,6 +3091,201 @@ test("automatically hands a direct torrent link to Firelink when the app is runn
   assert.equal(payload.torrent, true);
   assert.equal(payload.silent, true);
   assert.equal(requiredProtocolVersion, 5);
+});
+
+test("automatically hands an opaque HTTP download with a torrent filename to Firelink", async () => {
+  let payload = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  });
+
+  const response = await new Promise(resolve => {
+    fixture.listeners.message(
+      {
+        action: "captureAutomaticTorrent",
+        url: "https://example.com/download?id=attachment",
+        filename: "TerraScape.torrent"
+      },
+      { tab: { url: "https://example.com/page" } },
+      resolve
+    );
+  });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(response)), {
+    intercepted: true,
+    ambiguous: false
+  });
+  assert.equal(payload.torrent, true);
+  assert.equal(payload.filename, "TerraScape.torrent");
+  assert.deepEqual(JSON.parse(JSON.stringify(payload.urls)), [
+    "https://example.com/download?id=attachment"
+  ]);
+});
+
+test("hands a browser-local torrent attachment to Firelink as a binary torrent request", async () => {
+  let payload = null;
+  let requiredProtocolVersion = null;
+  const torrentBytesBase64 = Buffer.from("d4:infod6:lengthi5e4:name4:testee").toString("base64");
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    requiredProtocolVersion = request.requiredProtocolVersion;
+    return { ok: true };
+  });
+
+  const response = await new Promise(resolve => {
+    const keepAlive = fixture.listeners.message(
+      {
+        action: "captureAutomaticTorrent",
+        browserLocalTorrent: true,
+        url: "blob:https://example.com/attachment-id",
+        sourceURL: "https://example.com/page",
+        filename: "sample.torrent",
+        torrentBytesBase64
+      },
+      { tab: { url: "https://example.com/page" } },
+      resolve
+    );
+    assert.equal(keepAlive, true);
+  });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(response)), {
+    intercepted: true,
+    ambiguous: false
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(payload)), {
+    urls: ["https://example.com/page"],
+    referer: "https://example.com/page",
+    silent: true,
+    filename: "sample.torrent",
+    headers: "User-Agent: Firefox Test",
+    media: false,
+    torrent_bytes_base64: torrentBytesBase64,
+    torrent: true
+  });
+  assert.equal(requiredProtocolVersion, 6);
+});
+
+test("does not hand off browser-local torrent bytes when automatic capture is disabled", async () => {
+  let handoffCalls = 0;
+  const fixture = createBackgroundContext(async () => {
+    handoffCalls += 1;
+    return { ok: true };
+  }, { settings: { globalCapture: false } });
+
+  const response = await new Promise(resolve => {
+    fixture.listeners.message(
+      {
+        action: "captureAutomaticTorrent",
+        browserLocalTorrent: true,
+        sourceURL: "https://example.com/page",
+        filename: "sample.torrent",
+        torrentBytesBase64: Buffer.from("torrent").toString("base64")
+      },
+      { tab: { url: "https://example.com/page" } },
+      resolve
+    );
+  });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(response)), {
+    intercepted: false,
+    ambiguous: false
+  });
+  assert.equal(handoffCalls, 0);
+});
+
+test("applies the source page site exclusion when a local attachment tab is opaque", async () => {
+  let handoffCalls = 0;
+  const fixture = createBackgroundContext(async () => {
+    handoffCalls += 1;
+    return { ok: true };
+  }, {
+    settings: { siteToggles: { "example.com": true } }
+  });
+
+  const response = await new Promise(resolve => {
+    fixture.listeners.message(
+      {
+        action: "captureAutomaticTorrent",
+        browserLocalTorrent: true,
+        sourceURL: "https://example.com/page",
+        filename: "sample.torrent",
+        torrentBytesBase64: Buffer.from("torrent").toString("base64")
+      },
+      { tab: { url: "blob:https://example.com/attachment" } },
+      resolve
+    );
+  });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(response)), {
+    intercepted: false,
+    ambiguous: false
+  });
+  assert.equal(handoffCalls, 0);
+});
+
+test("keeps a browser-local torrent click suppressed when binary delivery is ambiguous", async () => {
+  const fixture = createBackgroundContext(async () => {
+    throw { serverReached: true, status: 504 };
+  });
+
+  const response = await new Promise(resolve => {
+    fixture.listeners.message(
+      {
+        action: "captureAutomaticTorrent",
+        browserLocalTorrent: true,
+        sourceURL: "https://example.com/page",
+        filename: "sample.torrent",
+        torrentBytesBase64: Buffer.from("torrent").toString("base64")
+      },
+      { tab: { url: "https://example.com/page" } },
+      resolve
+    );
+  });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(response)), {
+    intercepted: true,
+    ambiguous: true
+  });
+});
+
+test("delivers a browser-local torrent through the launch fallback", async () => {
+  let downloadAttempts = 0;
+  let payload = null;
+  const calls = [];
+  const torrentBytesBase64 = Buffer.from("d4:infod6:lengthi5e4:name4:testee").toString("base64");
+  const fixture = createBackgroundContext(async (path, _token, request) => {
+    calls.push(path);
+    if (path === "/download" && downloadAttempts++ === 0) {
+      throw { serverReached: false, requestMayHaveBeenSent: false };
+    }
+    if (path === "/download") payload = request.payload;
+    return { ok: true };
+  });
+
+  const response = await new Promise(resolve => {
+    fixture.listeners.message(
+      {
+        action: "captureAutomaticTorrent",
+        browserLocalTorrent: true,
+        sourceURL: "https://example.com/page",
+        filename: "sample.torrent",
+        torrentBytesBase64
+      },
+      { tab: { url: "https://example.com/page" } },
+      resolve
+    );
+  });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(response)), {
+    intercepted: true,
+    ambiguous: false
+  });
+  assert.equal(payload.torrent, true);
+  assert.equal(payload.torrent_bytes_base64, torrentBytesBase64);
+  assert.equal(fixture.createdTabs.length, 1);
+  assert.ok(calls.includes("/ping"));
+  assert.equal(calls.filter(path => path === "/download").length, 2);
 });
 
 test("definitely declined direct torrent links remain browser downloads", async () => {

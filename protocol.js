@@ -10,8 +10,8 @@
   const SERVER_PORT_HEADER = "X-Firelink-Server-Port";
   const SERVER_PROOF_PREFIX = "firelink-server-proof";
   // Version 4 remains the baseline discovery contract for ordinary downloads.
-  // Torrent and magnet payloads opt into the stricter version 5 minimum at
-  // the signed request boundary.
+  // Remote torrent and magnet payloads opt into version 5, while browser-local
+  // torrent bytes require version 6 at the signed request boundary.
   const PROTOCOL_VERSION = 4;
   const DISCOVERY_TIMEOUT_MS = 750;
   const REQUEST_TIMEOUT_MS = 5000;

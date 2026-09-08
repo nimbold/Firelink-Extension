@@ -43,6 +43,7 @@ test("generates a Chromium Manifest V3 service worker manifest", () => {
   assert.ok(manifest.permissions.includes("downloads"));
   assert.ok(manifest.permissions.includes("cookies"));
   assert.deepEqual(manifest.host_permissions, ["<all_urls>"]);
+  assert.equal(manifest.content_scripts[0].match_origin_as_fallback, true);
 });
 
 test("packages Firefox and Chromium load-unpacked directories", () => {
@@ -65,6 +66,8 @@ test("packages Firefox and Chromium load-unpacked directories", () => {
     assert.deepEqual(chromiumManifest.background, {
       service_worker: "chromium-service-worker.js"
     });
+    assert.equal(firefoxManifest.content_scripts[0].match_origin_as_fallback, true);
+    assert.equal(chromiumManifest.content_scripts[0].match_origin_as_fallback, true);
     assert.equal(chromiumManifest.default_locale, "en");
     assert.equal(chromiumManifest.name, "__MSG_extensionName__");
     assert.equal(chromiumManifest.description, "__MSG_extensionDescription__");

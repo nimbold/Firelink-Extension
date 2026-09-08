@@ -355,6 +355,215 @@ test("intercepts a direct torrent click including query, case, and download attr
   assert.equal(stopped, true);
 });
 
+test("intercepts an opaque HTTP torrent download identified by its download attribute", () => {
+  let clickListener;
+  let sentMessage;
+  const anchor = {
+    nodeType: 1,
+    tagName: "A",
+    isConnected: true,
+    getAttribute(name) {
+      if (name === "href") return "https://example.com/download?id=attachment";
+      if (name === "download") return "TerraScape.torrent";
+      return null;
+    },
+    hasAttribute(name) { return name === "download"; },
+    click() { throw new Error("original navigation should not run after acceptance"); }
+  };
+  const context = vm.createContext({
+    URL,
+    Date,
+    document: {
+      baseURI: "https://example.com/page",
+      addEventListener(type, listener) {
+        if (type === "click") clickListener = listener;
+      },
+      createElement() {
+        return { appendChild() {}, querySelectorAll() { return []; } };
+      }
+    },
+    window: {
+      getSelection() { return { rangeCount: 0 }; },
+      location: { assign() {} }
+    },
+    chrome: {
+      runtime: {
+        onMessage: { addListener() {} },
+        lastError: null,
+        sendMessage(message, callback) {
+          sentMessage = message;
+          callback({ intercepted: true, ambiguous: false });
+        }
+      }
+    },
+    setTimeout,
+    clearTimeout
+  });
+
+  vm.runInContext(contentSource, context);
+  clickListener({
+    target: anchor,
+    button: 0,
+    isTrusted: true,
+    preventDefault() {},
+    stopImmediatePropagation() {}
+  });
+
+  assert.equal(sentMessage.action, "captureAutomaticTorrent");
+  assert.equal(sentMessage.url, "https://example.com/download?id=attachment");
+  assert.equal(sentMessage.filename, "TerraScape.torrent");
+});
+
+test("intercepts a browser-local torrent attachment and sends its bytes", async () => {
+  let clickListener;
+  let sentMessage;
+  let prevented = false;
+  let stopped = false;
+  const bytes = Uint8Array.from([100, 52, 58, 105, 110, 102, 111, 101]);
+  const anchor = {
+    nodeType: 1,
+    tagName: "A",
+    isConnected: true,
+    getAttribute(name) {
+      if (name === "href") return "blob:https://example.com/attachment-id";
+      if (name === "download") return "TerraScape [FitGirl Repack].torrent";
+      return null;
+    },
+    hasAttribute(name) { return name === "download"; },
+    click() { throw new Error("original navigation should not run after acceptance"); }
+  };
+  const context = vm.createContext({
+    URL,
+    Date,
+    Promise,
+    Uint8Array,
+    AbortController,
+    btoa,
+    fetch(url, options) {
+      assert.equal(url, "blob:https://example.com/attachment-id");
+      assert.ok(options?.signal);
+      return Promise.resolve({
+        ok: true,
+        arrayBuffer: async () => bytes.buffer
+      });
+    },
+    document: {
+      baseURI: "blob:https://example.com/page-id",
+      location: { href: "blob:https://example.com/page-id" },
+      referrer: "https://example.com/page",
+      addEventListener(type, listener) {
+        if (type === "click") clickListener = listener;
+      },
+      createElement() {
+        return { appendChild() {}, querySelectorAll() { return []; } };
+      }
+    },
+    window: {
+      getSelection() { return { rangeCount: 0 }; },
+      location: { href: "blob:https://example.com/page-id", assign() {} }
+    },
+    chrome: {
+      runtime: {
+        onMessage: { addListener() {} },
+        lastError: null,
+        sendMessage(message, callback) {
+          sentMessage = message;
+          callback({ intercepted: true, ambiguous: false });
+        }
+      }
+    },
+    setTimeout,
+    clearTimeout
+  });
+
+  vm.runInContext(contentSource, context);
+  clickListener({
+    target: anchor,
+    button: 0,
+    isTrusted: true,
+    preventDefault() { prevented = true; },
+    stopImmediatePropagation() { stopped = true; }
+  });
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(sentMessage.action, "captureAutomaticTorrent");
+  assert.equal(sentMessage.browserLocalTorrent, true);
+  assert.equal(sentMessage.url, "blob:https://example.com/attachment-id");
+  assert.equal(sentMessage.sourceURL, "https://example.com/page");
+  assert.equal(sentMessage.filename, "TerraScape [FitGirl Repack].torrent");
+  assert.equal(sentMessage.torrentBytesBase64, Buffer.from(bytes).toString("base64"));
+  assert.equal(prevented, true);
+  assert.equal(stopped, true);
+});
+
+test("recognizes a data torrent MIME URL and replays when the local read fails", async () => {
+  let clickListener;
+  let replayed = 0;
+  let sent = false;
+  let fetchCalled = false;
+  let prevented = false;
+  const context = vm.createContext({
+    URL,
+    Promise,
+    Uint8Array,
+    AbortController,
+    btoa,
+    fetch() {
+      fetchCalled = true;
+      return Promise.reject(new Error("attachment disappeared"));
+    },
+    document: {
+      baseURI: "https://example.com/page",
+      location: { href: "https://example.com/page" },
+      addEventListener(type, listener) {
+        if (type === "click") clickListener = listener;
+      },
+      createElement() {
+        return { appendChild() {}, querySelectorAll() { return []; } };
+      }
+    },
+    window: {
+      getSelection() { return { rangeCount: 0 }; },
+      location: { href: "https://example.com/page", assign() {} }
+    },
+    chrome: {
+      runtime: {
+        onMessage: { addListener() {} },
+        lastError: null,
+        sendMessage() { sent = true; }
+      }
+    },
+    setTimeout,
+    clearTimeout
+  });
+  const anchor = {
+    nodeType: 1,
+    tagName: "A",
+    isConnected: true,
+    getAttribute(name) {
+      return name === "href" ? "data:application/x-bittorrent;base64,ZA==" : null;
+    },
+    hasAttribute() { return false; },
+    click() { replayed += 1; }
+  };
+
+  vm.runInContext(contentSource, context);
+  clickListener({
+    target: anchor,
+    button: 0,
+    isTrusted: true,
+    preventDefault() { prevented = true; },
+    stopImmediatePropagation() {}
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(sent, false);
+  assert.equal(fetchCalled, true);
+  assert.equal(prevented, true);
+  assert.equal(replayed, 1);
+});
+
 test("replays a direct torrent click when automatic capture declines it", () => {
   let clickListener;
   let replayed = 0;
