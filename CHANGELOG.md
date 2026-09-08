@@ -2,19 +2,32 @@
 
 All notable changes to Firelink Companion will be documented in this file.
 
-## [2.2.1] - 2026-08-28
+## [2.2.2] - 2026-09-08
 
-This release continues to pair with [Firelink 1.4.0](https://github.com/nimbold/Firelink/releases/tag/v1.4.0) and prepares the shared Chromium package for Microsoft Edge Add-ons.
+This release pairs with [Firelink 1.4.2](https://github.com/nimbold/Firelink/releases/tag/v1.4.2). It brings the Edge-ready package together with important Torrent handoff fixes from the 2.2.1 release candidate.
 
 ### New features
 
-- Add Chromium WebExtension localization metadata for English, Simplified Chinese, Hebrew, Persian, Ukrainian, and Russian so browser stores can detect the six supported listing languages.
-- Add an Edge Add-ons submission kit with localized listing descriptions, permission justifications, certification notes, privacy policy, and branded store artwork.
+- **Microsoft Edge Add-ons package preparation**
+  - Ship the shared Chromium package with localized store metadata for English, Simplified Chinese, Hebrew, Persian, Ukrainian, and Russian.
+  - Provide localized listing descriptions, permission explanations, certification notes, privacy policy guidance, and branded store artwork, responding to [Firelink #39](https://github.com/nimbold/Firelink/issues/39).
+- **Browser-local Torrent attachments**
+  - Send `blob:` and `data:` Torrent files from the browser to Firelink's Add window through the supported binary handoff.
 
 ### Improvements
 
-- Include `_locales` in both Firefox and Chromium packages while keeping the existing popup localization and Firelink 1.4.0 protocol contract unchanged.
-- Keep the stable popup and context-menu **Fetch media** flow; defer an in-page media button that would require ongoing site-specific maintenance.
+- Preserve final filenames, redirect details, MIME information, and browser-download ownership while automatic captures settle or recover across service-worker restarts.
+- Keep browser cookies limited to the ordinary captured-download path while local Torrent attachments use their dedicated handoff data.
+
+### Fixes
+
+- Capture direct `.torrent` links before the browser reports the download complete.
+- Preserve completed Torrent captures when completion races pausing, filename settling, or background recovery.
+- Prevent automatic captures from being duplicated, resumed too early, or cleaned up as the wrong browser download during these races.
+
+### Compatibility
+
+- Use [Firelink `1.4.2`](https://github.com/nimbold/Firelink/releases/tag/v1.4.2). Until the Edge listing is certified and published, Chromium users should continue with the [manual installation](README.md#manual-chromium-installation).
 
 ## [2.2.0] - 2026-08-27
 

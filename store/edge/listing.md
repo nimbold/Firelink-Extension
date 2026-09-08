@@ -1,11 +1,11 @@
 # Microsoft Edge Add-ons submission kit
 
-This kit is for the public listing of Firelink Companion 2.2.1. Upload the shared `firelink-chromium.zip` package produced by the release workflow; do not create a separate Edge codebase or add Edge-only permissions.
+This kit is for the public listing of Firelink Companion 2.2.2. Upload the shared `firelink-chromium.zip` package produced by the release workflow; do not create a separate Edge codebase or add Edge-only permissions.
 
 ## Listing metadata
 
 - Product name: Firelink Companion
-- Version: 2.2.1
+- Version: 2.2.2
 - Visibility: Public
 - Category: Productivity
 - Language rows: English, Simplified Chinese, Hebrew, Persian, Ukrainian, Russian

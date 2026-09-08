@@ -20,9 +20,9 @@ Captured links open Firelink's Add window first. You can review them before star
 
 ## Status
 
-The Companion package prepared here is **2.2.1**. It is compatible with [Firelink `1.4.0`](https://github.com/nimbold/Firelink/releases/tag/v1.4.0).
+The Companion package is **2.2.2**. It is compatible with [Firelink `1.4.2`](https://github.com/nimbold/Firelink/releases/tag/v1.4.2).
 
-Version 2.2.1 prepares the shared Chromium package for a public Microsoft Edge Add-ons listing. The Partner Center upload and Microsoft certification are still separate release steps; until the listing is certified, use the manual Chromium installation below. The submission material is kept in [`store/edge/listing.md`](store/edge/listing.md).
+Version 2.2.2 includes the browser-local Torrent handoff fixes and the shared Chromium package prepared for a public Microsoft Edge Add-ons listing. The Partner Center upload and Microsoft certification are still separate release steps; until the listing is certified, use the manual Chromium installation below. The submission material is kept in [`store/edge/listing.md`](store/edge/listing.md).
 
 The project is actively maintained. Use the [latest Companion release](https://github.com/nimbold/Firelink-Extension/releases/latest) with the [latest Firelink release](https://github.com/nimbold/Firelink/releases/latest).
 
