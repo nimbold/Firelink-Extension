@@ -293,6 +293,345 @@ test("does not replay a magnet when the handoff result is ambiguous", () => {
   assert.equal(sentMessages.at(-1).action, "reportAutomaticMagnetTimeout");
 });
 
+test("intercepts a direct torrent click including query, case, and download attributes", () => {
+  let clickListener;
+  let sentMessage;
+  let prevented = false;
+  let stopped = false;
+  const anchor = {
+    nodeType: 1,
+    tagName: "A",
+    isConnected: true,
+    getAttribute(name) {
+      return name === "href"
+        ? "https://example.com/files/Release.TORRENT?mirror=1#download"
+        : null;
+    },
+    hasAttribute(name) { return name === "download"; },
+    click() { throw new Error("original navigation should not run after acceptance"); }
+  };
+  const context = vm.createContext({
+    URL,
+    Date,
+    document: {
+      baseURI: "https://example.com/page",
+      addEventListener(type, listener) {
+        if (type === "click") clickListener = listener;
+      },
+      createElement() {
+        return { appendChild() {}, querySelectorAll() { return []; } };
+      }
+    },
+    window: {
+      getSelection() { return { rangeCount: 0 }; },
+      location: { assign() {} }
+    },
+    chrome: {
+      runtime: {
+        onMessage: { addListener() {} },
+        lastError: null,
+        sendMessage(message) {
+          sentMessage = message;
+          return Promise.resolve({ intercepted: true, ambiguous: false });
+        }
+      }
+    },
+    setTimeout,
+    clearTimeout
+  });
+
+  vm.runInContext(contentSource, context);
+  clickListener({
+    target: anchor,
+    button: 0,
+    isTrusted: true,
+    preventDefault() { prevented = true; },
+    stopImmediatePropagation() { stopped = true; }
+  });
+
+  assert.equal(sentMessage.action, "captureAutomaticTorrent");
+  assert.equal(sentMessage.url, "https://example.com/files/Release.TORRENT?mirror=1#download");
+  assert.equal(prevented, true);
+  assert.equal(stopped, true);
+});
+
+test("replays a direct torrent click when automatic capture declines it", () => {
+  let clickListener;
+  let replayed = 0;
+  const anchor = {
+    nodeType: 1,
+    tagName: "A",
+    isConnected: true,
+    getAttribute(name) {
+      return name === "href" ? "https://example.com/sample.torrent" : null;
+    },
+    hasAttribute() { return false; },
+    click() { replayed += 1; }
+  };
+  const context = vm.createContext({
+    URL,
+    Date,
+    document: {
+      baseURI: "https://example.com/page",
+      addEventListener(type, listener) {
+        if (type === "click") clickListener = listener;
+      },
+      createElement() {
+        return { appendChild() {}, querySelectorAll() { return []; } };
+      }
+    },
+    window: {
+      getSelection() { return { rangeCount: 0 }; },
+      location: { assign() {} }
+    },
+    chrome: {
+      runtime: {
+        onMessage: { addListener() {} },
+        lastError: null,
+        sendMessage(_message, callback) {
+          callback({ intercepted: false, ambiguous: false });
+        }
+      }
+    },
+    setTimeout,
+    clearTimeout
+  });
+
+  vm.runInContext(contentSource, context);
+  clickListener({
+    target: anchor,
+    button: 0,
+    isTrusted: true,
+    preventDefault() {},
+    stopImmediatePropagation() {}
+  });
+
+  assert.equal(replayed, 1);
+});
+
+test("replays a direct torrent click when the receiver is definitely unavailable", () => {
+  let clickListener;
+  let replayed = 0;
+  const anchor = {
+    nodeType: 1,
+    tagName: "A",
+    isConnected: true,
+    getAttribute(name) {
+      return name === "href" ? "https://example.com/sample.torrent" : null;
+    },
+    hasAttribute() { return true; },
+    click() { replayed += 1; }
+  };
+  const context = vm.createContext({
+    URL,
+    Date,
+    document: {
+      baseURI: "https://example.com/page",
+      addEventListener(type, listener) {
+        if (type === "click") clickListener = listener;
+      },
+      createElement() {
+        return { appendChild() {}, querySelectorAll() { return []; } };
+      }
+    },
+    window: {
+      getSelection() { return { rangeCount: 0 }; },
+      location: { assign() {} }
+    },
+    chrome: {
+      runtime: {
+        onMessage: { addListener() {} },
+        lastError: null,
+        sendMessage(_message, callback) {
+          context.chrome.runtime.lastError = {
+            message: "Could not establish connection. Receiving end does not exist."
+          };
+          callback();
+          context.chrome.runtime.lastError = null;
+        }
+      }
+    },
+    setTimeout,
+    clearTimeout
+  });
+
+  vm.runInContext(contentSource, context);
+  clickListener({
+    target: anchor,
+    button: 0,
+    isTrusted: true,
+    preventDefault() {},
+    stopImmediatePropagation() {}
+  });
+
+  assert.equal(replayed, 1);
+});
+
+test("does not replay a direct torrent click when the handoff is ambiguous", () => {
+  let clickListener;
+  let timeoutCallback;
+  let replayed = 0;
+  const sentMessages = [];
+  const anchor = {
+    nodeType: 1,
+    tagName: "A",
+    isConnected: true,
+    getAttribute(name) {
+      return name === "href" ? "https://example.com/sample.torrent" : null;
+    },
+    hasAttribute() { return false; },
+    click() { replayed += 1; }
+  };
+  const context = vm.createContext({
+    URL,
+    Date,
+    document: {
+      baseURI: "https://example.com/page",
+      addEventListener(type, listener) {
+        if (type === "click") clickListener = listener;
+      },
+      createElement() {
+        return { appendChild() {}, querySelectorAll() { return []; } };
+      }
+    },
+    window: {
+      getSelection() { return { rangeCount: 0 }; },
+      location: { assign() {} }
+    },
+    chrome: {
+      runtime: {
+        onMessage: { addListener() {} },
+        lastError: null,
+        sendMessage(message) {
+          sentMessages.push(message);
+        }
+      }
+    },
+    setTimeout(callback) {
+      timeoutCallback = callback;
+      return 1;
+    },
+    clearTimeout() {}
+  });
+
+  vm.runInContext(contentSource, context);
+  clickListener({
+    target: anchor,
+    button: 0,
+    isTrusted: true,
+    preventDefault() {},
+    stopImmediatePropagation() {}
+  });
+  timeoutCallback();
+
+  assert.equal(replayed, 0);
+  assert.equal(sentMessages.at(-1).action, "reportAutomaticTorrentTimeout");
+});
+
+test("does not report an ambiguity twice when the background already classified it", () => {
+  let clickListener;
+  const sentMessages = [];
+  let replayed = 0;
+  const anchor = {
+    nodeType: 1,
+    tagName: "A",
+    isConnected: true,
+    getAttribute(name) {
+      return name === "href" ? "https://example.com/sample.torrent" : null;
+    },
+    hasAttribute() { return false; },
+    click() { replayed += 1; }
+  };
+  const context = vm.createContext({
+    URL,
+    Date,
+    document: {
+      baseURI: "https://example.com/page",
+      addEventListener(type, listener) {
+        if (type === "click") clickListener = listener;
+      },
+      createElement() {
+        return { appendChild() {}, querySelectorAll() { return []; } };
+      }
+    },
+    window: {
+      getSelection() { return { rangeCount: 0 }; },
+      location: { assign() {} }
+    },
+    chrome: {
+      runtime: {
+        onMessage: { addListener() {} },
+        sendMessage(message, callback) {
+          sentMessages.push(message);
+          if (callback) {
+            callback({ intercepted: true, ambiguous: true });
+          }
+        }
+      }
+    },
+    setTimeout,
+    clearTimeout
+  });
+
+  vm.runInContext(contentSource, context);
+  clickListener({
+    target: anchor,
+    button: 0,
+    isTrusted: true,
+    preventDefault() {},
+    stopImmediatePropagation() {}
+  });
+
+  assert.equal(replayed, 0);
+  assert.deepEqual(sentMessages.map(message => message.action), ["captureAutomaticTorrent"]);
+});
+
+test("preserves modified-click behavior for direct torrent links", () => {
+  let clickListener;
+  let sent = false;
+  let prevented = false;
+  const anchor = {
+    nodeType: 1,
+    tagName: "A",
+    getAttribute(name) {
+      return name === "href" ? "https://example.com/sample.torrent" : null;
+    },
+    hasAttribute() { return false; }
+  };
+  const context = vm.createContext({
+    URL,
+    document: {
+      baseURI: "https://example.com/page",
+      addEventListener(type, listener) {
+        if (type === "click") clickListener = listener;
+      },
+      createElement() {
+        return { appendChild() {}, querySelectorAll() { return []; } };
+      }
+    },
+    window: { getSelection() { return { rangeCount: 0 }; } },
+    chrome: {
+      runtime: {
+        onMessage: { addListener() {} },
+        sendMessage() { sent = true; }
+      }
+    }
+  });
+
+  vm.runInContext(contentSource, context);
+  clickListener({
+    target: anchor,
+    button: 0,
+    ctrlKey: true,
+    isTrusted: true,
+    preventDefault() { prevented = true; },
+    stopImmediatePropagation() {}
+  });
+
+  assert.equal(sent, false);
+  assert.equal(prevented, false);
+});
+
 test("content link extraction includes an anchor intersected by a partial selection", () => {
   let listener;
   const anchor = {

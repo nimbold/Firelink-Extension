@@ -29,6 +29,7 @@ function createBackgroundContext(signedFetch, options = {}) {
   const observedDownloads = new Map();
   const deferredStorageCallbacks = [];
   let deferredStorageGetCount = 0;
+  let downloadSearchCount = 0;
   let persistedPendingCaptures = options.pendingCaptures || {};
   const chrome = {
     contextMenus: {
@@ -146,7 +147,9 @@ function createBackgroundContext(signedFetch, options = {}) {
           chrome.runtime.lastError = null;
           return;
         }
-        const item = options.downloadsById?.[query.id] || observedDownloads.get(query.id);
+        const item = typeof options.onDownloadSearch === "function"
+          ? options.onDownloadSearch(query.id, downloadSearchCount++)
+          : options.downloadsById?.[query.id] || observedDownloads.get(query.id);
         if (item && item.paused === undefined) item.paused = true;
         if (item && item.state === undefined) item.state = "in_progress";
         if (options.promiseOnly) {
@@ -1065,6 +1068,387 @@ test("automatic capture abandons a download that completes before handoff", asyn
   assert.equal(handoffCalls, 0);
   assert.deepEqual(fixture.downloadActions, [["pause", 30]]);
   assert.equal(fixture.getPendingCaptures()["30"], undefined);
+});
+
+test("completed small torrents are handed off without browser cleanup", async () => {
+  let fixture;
+  let payload = null;
+  const browserItem = {
+    id: 35,
+    url: "https://example.com/sample.torrent",
+    state: "in_progress",
+    paused: false,
+    filename: "/Users/test/sample.torrent"
+  };
+  fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, {
+    downloadsById: { 35: browserItem },
+    onDownloadAction(action, id) {
+      if (action !== "pause") {
+        return;
+      }
+      // The 23 KB response completes before the pause postcondition becomes
+      // observable, which is the race the automatic path must handle.
+      browserItem.state = "complete";
+      browserItem.paused = false;
+      fixture.listeners.downloadChanged({
+        id,
+        state: { current: "complete" },
+        paused: { current: false }
+      });
+    }
+  });
+
+  await fixture.listeners.downloadCreated({
+    id: 35,
+    url: "https://example.com/sample.torrent",
+    referrer: "https://example.com/page",
+    filename: "/Users/test/sample.torrent"
+  });
+
+  assert.equal(payload?.torrent, true);
+  assert.equal(payload?.silent, true);
+  assert.deepEqual(fixture.downloadActions, [["pause", 35]]);
+  assert.equal(fixture.getPendingCaptures()["35"], undefined);
+});
+
+test("keeps a completed torrent handoff when the browser search is briefly stale", async () => {
+  let payload = null;
+  const browserItem = {
+    id: 42,
+    url: "https://example.com/stale-complete.torrent",
+    state: "in_progress",
+    paused: false,
+    filename: "/Users/test/stale-complete.torrent"
+  };
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, {
+    downloadsById: { 42: browserItem },
+    onDownloadAction(action, id) {
+      if (action !== "pause") {
+        return;
+      }
+      browserItem.state = "complete";
+      browserItem.paused = false;
+      fixture.listeners.downloadChanged({
+        id,
+        state: { current: "complete" },
+        paused: { current: false }
+      });
+    },
+    onDownloadSearch() {
+      // Keep returning the pre-completion view to model a browser API read
+      // racing the completion event.
+      return {
+        ...browserItem,
+        state: "in_progress",
+        paused: false
+      };
+    }
+  });
+
+  await fixture.listeners.downloadCreated({
+    id: 42,
+    url: "https://example.com/stale-complete.torrent",
+    referrer: "https://example.com/page",
+    filename: "/Users/test/stale-complete.torrent"
+  });
+
+  assert.equal(payload?.torrent, true);
+  assert.deepEqual(fixture.downloadActions, [["pause", 42]]);
+  assert.equal(fixture.getPendingCaptures()["42"], undefined);
+});
+
+test("recomputes the torrent flag from metadata observed immediately before handoff", async () => {
+  let fixture;
+  let payload = null;
+  const browserItem = {
+    id: 44,
+    url: "https://example.com/opaque?id=late-mime",
+    state: "in_progress",
+    paused: false,
+    filename: "/Users/test/archive.bin"
+  };
+  fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, {
+    downloadsById: { 44: browserItem },
+    onDownloadAction(action) {
+      if (action === "pause") {
+        browserItem.paused = true;
+      }
+    },
+    beforeStorageSet(value) {
+      const record = value.pendingAutomaticCaptures?.["44"];
+      if (record?.phase !== "sending" || browserItem.mime) {
+        return;
+      }
+      browserItem.mime = "application/x-bittorrent";
+      fixture.listeners.downloadChanged({
+        id: 44,
+        mime: { current: "application/x-bittorrent" }
+      });
+    }
+  });
+
+  await fixture.listeners.downloadCreated({
+    id: 44,
+    url: "https://example.com/opaque?id=late-mime",
+    referrer: "https://example.com/page",
+    filename: "/Users/test/archive.bin"
+  });
+
+  assert.equal(payload?.torrent, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.downloadActions)), [
+    ["pause", 44],
+    ["cancel", 44],
+    ["erase", { id: 44 }]
+  ]);
+  assert.equal(fixture.getPendingCaptures()["44"], undefined);
+});
+
+test("uses a MIME completion delta when the browser snapshot omits the MIME", async () => {
+  let fixture;
+  let payload = null;
+  const browserItem = {
+    id: 40,
+    url: "https://example.com/download?id=mime-only",
+    state: "in_progress",
+    paused: false,
+    filename: "/Users/test/archive.bin"
+  };
+  fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, {
+    downloadsById: { 40: browserItem },
+    onDownloadAction(action, id) {
+      if (action !== "pause") {
+        return;
+      }
+      browserItem.state = "complete";
+      browserItem.paused = false;
+      fixture.listeners.downloadChanged({
+        id,
+        state: { current: "complete" },
+        paused: { current: false },
+        mime: { current: "application/x-bittorrent; charset=binary" }
+      });
+    }
+  });
+
+  await fixture.listeners.downloadCreated({
+    id: 40,
+    url: "https://example.com/download?id=mime-only",
+    referrer: "https://example.com/page",
+    filename: "/Users/test/archive.bin"
+  });
+
+  assert.equal(payload?.torrent, true);
+  assert.deepEqual(fixture.downloadActions, [["pause", 40]]);
+  assert.equal(fixture.getPendingCaptures()["40"], undefined);
+});
+
+test("completion during ownership persistence still hands off a direct torrent", async () => {
+  let fixture;
+  let payload = null;
+  let completed = false;
+  const browserItem = {
+    id: 41,
+    url: "https://example.com/persisted-race.torrent",
+    state: "in_progress",
+    paused: false,
+    filename: "/Users/test/persisted-race.torrent"
+  };
+  fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, {
+    downloadsById: { 41: browserItem },
+    beforeStorageSet(value) {
+      if (completed || !Object.prototype.hasOwnProperty.call(value, "pendingAutomaticCaptures")) {
+        return;
+      }
+      completed = true;
+      browserItem.state = "complete";
+      browserItem.paused = false;
+      fixture.listeners.downloadChanged({
+        id: 41,
+        state: { current: "complete" },
+        paused: { current: false }
+      });
+    }
+  });
+
+  await fixture.listeners.downloadCreated({
+    id: 41,
+    url: "https://example.com/persisted-race.torrent",
+    referrer: "https://example.com/page",
+    filename: "/Users/test/persisted-race.torrent"
+  });
+
+  assert.equal(payload?.torrent, true);
+  assert.deepEqual(fixture.downloadActions, []);
+  assert.equal(fixture.getPendingCaptures()["41"], undefined);
+});
+
+test("completion while settings are loading still hands off a direct torrent", async () => {
+  let fixture;
+  let releaseStorage;
+  let payload = null;
+  const browserItem = {
+    id: 43,
+    url: "https://example.com/settings-race.torrent",
+    state: "in_progress",
+    paused: false,
+    filename: "/Users/test/settings-race.torrent"
+  };
+  fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, {
+    downloadsById: { 43: browserItem },
+    deferStorageGetOnce: true,
+    deferStorageGet(release) {
+      releaseStorage = release;
+    }
+  });
+
+  const capture = fixture.listeners.downloadCreated({
+    id: 43,
+    url: "https://example.com/settings-race.torrent",
+    referrer: "https://example.com/page",
+    filename: "/Users/test/settings-race.torrent"
+  });
+  browserItem.state = "complete";
+  browserItem.paused = false;
+  fixture.listeners.downloadChanged({
+    id: 43,
+    state: { current: "complete" },
+    paused: { current: false }
+  });
+  releaseStorage();
+  await capture;
+
+  assert.equal(payload?.torrent, true);
+  assert.deepEqual(fixture.downloadActions, []);
+  assert.equal(fixture.getPendingCaptures()["43"], undefined);
+});
+
+test("already-complete torrent downloads do not receive a pause action", async () => {
+  let payload = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, {
+    downloadsById: {
+      36: {
+        id: 36,
+        url: "https://example.com/already-complete.torrent",
+        state: "complete",
+        paused: false,
+        filename: "/Users/test/already-complete.torrent"
+      }
+    }
+  });
+
+  await fixture.listeners.downloadCreated({
+    id: 36,
+    url: "https://example.com/already-complete.torrent",
+    referrer: "https://example.com/page",
+    state: "complete",
+    filename: "/Users/test/already-complete.torrent"
+  });
+
+  assert.equal(payload?.torrent, true);
+  assert.deepEqual(fixture.downloadActions, []);
+  assert.equal(fixture.getPendingCaptures()["36"], undefined);
+});
+
+test("pause failure still hands off a torrent that completed before inspection", async () => {
+  let payload = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, {
+    downloadActionErrors: { pause: "download already complete" },
+    downloadsById: {
+      38: {
+        id: 38,
+        url: "https://example.com/fast.torrent",
+        state: "complete",
+        paused: false,
+        filename: "/Users/test/fast.torrent"
+      }
+    }
+  });
+
+  await fixture.listeners.downloadCreated({
+    id: 38,
+    url: "https://example.com/fast.torrent",
+    referrer: "https://example.com/page",
+    filename: "/Users/test/fast.torrent"
+  });
+
+  assert.equal(payload?.torrent, true);
+  assert.deepEqual(fixture.downloadActions, [["pause", 38]]);
+  assert.equal(fixture.getPendingCaptures()["38"], undefined);
+});
+
+test("completion during the Firelink request uses the non-destructive torrent path", async () => {
+  let fixture;
+  let releaseHandoff;
+  let handoffStarted;
+  let payload = null;
+  const handoffRelease = new Promise(resolve => { releaseHandoff = resolve; });
+  const handoffStartedPromise = new Promise(resolve => { handoffStarted = resolve; });
+  const browserItem = {
+    id: 39,
+    url: "https://example.com/during-request.torrent",
+    state: "in_progress",
+    paused: false,
+    filename: "/Users/test/during-request.torrent"
+  };
+  fixture = createBackgroundContext(async (path, _token, request) => {
+    if (path === "/download") {
+      payload = request.payload;
+      handoffStarted();
+      await handoffRelease;
+    }
+    return { ok: true };
+  }, {
+    downloadsById: { 39: browserItem },
+    onDownloadAction(action) {
+      if (action === "pause") {
+        browserItem.paused = true;
+      }
+    }
+  });
+
+  const capture = fixture.listeners.downloadCreated({
+    id: 39,
+    url: "https://example.com/during-request.torrent",
+    referrer: "https://example.com/page",
+    filename: "/Users/test/during-request.torrent"
+  });
+  await handoffStartedPromise;
+  browserItem.state = "complete";
+  browserItem.paused = false;
+  fixture.listeners.downloadChanged({
+    id: 39,
+    state: { current: "complete" }
+  });
+  releaseHandoff();
+  await capture;
+
+  assert.equal(payload?.torrent, true);
+  assert.deepEqual(fixture.downloadActions, [["pause", 39]]);
+  assert.equal(fixture.getPendingCaptures()["39"], undefined);
 });
 
 test("automatic capture does not recapture a download the user resumes while waiting for its filename", async () => {
@@ -2016,6 +2400,42 @@ test("worker restart does not resume a terminal capture when capture is disabled
   assert.equal(fixture.getPendingCaptures()["17"], undefined);
 });
 
+test("worker recovery hands off a completed torrent without pausing or deleting it", async () => {
+  let payload = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, {
+    pendingCaptures: {
+      "37": {
+        id: 37,
+        url: "https://example.com/download?id=opaque-torrent",
+        referrer: "https://example.com/page",
+        filename: "archive.bin",
+        phase: "ready"
+      }
+    },
+    downloadsById: {
+      37: {
+        id: 37,
+        url: "https://example.com/download?id=opaque-torrent",
+        finalUrl: "https://cdn.example.com/download?id=opaque-torrent",
+        state: "complete",
+        paused: false,
+        filename: "/Users/test/archive.bin",
+        mime: "application/x-bittorrent; charset=binary"
+      }
+    }
+  });
+
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(payload?.torrent, true);
+  assert.equal(payload?.silent, true);
+  assert.deepEqual(fixture.downloadActions, []);
+  assert.equal(fixture.getPendingCaptures()["37"], undefined);
+});
+
 test("worker restart retries a Firefox paused interruption as an automatic capture", async () => {
   let payload = null;
   const fixture = createBackgroundContext(async (_path, _token, request) => {
@@ -2522,6 +2942,104 @@ test("automatically hands a clicked magnet through launch fallback when the app 
 
   assert.deepEqual(JSON.parse(JSON.stringify(response)), { intercepted: true, ambiguous: false });
   assert.equal(payload.torrent, true);
+  assert.equal(fixture.createdTabs.length, 1);
+  assert.ok(calls.includes("/ping"));
+  assert.equal(calls.filter(path => path === "/download").length, 2);
+});
+
+test("automatically hands a direct torrent link to Firelink when the app is running", async () => {
+  let payload = null;
+  let requiredProtocolVersion = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    requiredProtocolVersion = request.requiredProtocolVersion;
+    return { ok: true };
+  });
+
+  const response = await new Promise(resolve => {
+    const keepAlive = fixture.listeners.message(
+      {
+        action: "captureAutomaticTorrent",
+        url: "https://example.com/releases/Release.TORRENT?mirror=1"
+      },
+      { tab: { url: "https://example.com/releases" } },
+      resolve
+    );
+    assert.equal(keepAlive, true);
+  });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(response)), {
+    intercepted: true,
+    ambiguous: false
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(payload.urls)), [
+    "https://example.com/releases/Release.TORRENT?mirror=1"
+  ]);
+  assert.equal(payload.torrent, true);
+  assert.equal(payload.silent, true);
+  assert.equal(requiredProtocolVersion, 5);
+});
+
+test("definitely declined direct torrent links remain browser downloads", async () => {
+  let handoffCalls = 0;
+  const fixture = createBackgroundContext(async () => {
+    handoffCalls += 1;
+    return { ok: true };
+  }, {
+    settings: { extensionToken: "" }
+  });
+
+  const response = await new Promise(resolve => {
+    fixture.listeners.message(
+      {
+        action: "captureAutomaticTorrent",
+        url: "https://example.com/sample.torrent"
+      },
+      { tab: { id: 12, url: "https://example.com/page" } },
+      resolve
+    );
+  });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(response)), {
+    intercepted: false,
+    ambiguous: false
+  });
+  assert.equal(handoffCalls, 0);
+  assert.deepEqual(fixture.updatedTabs, []);
+});
+
+test("automatically hands a direct torrent link through launch fallback", async () => {
+  let payload = null;
+  let downloadAttempts = 0;
+  const calls = [];
+  const fixture = createBackgroundContext(async (path, _token, request) => {
+    calls.push(path);
+    if (path === "/download" && downloadAttempts++ === 0) {
+      throw { serverReached: false, requestMayHaveBeenSent: false };
+    }
+    if (path === "/download") {
+      payload = request.payload;
+    }
+    return { ok: true };
+  });
+
+  const response = await new Promise(resolve => {
+    fixture.listeners.message(
+      {
+        action: "captureAutomaticTorrent",
+        url: "https://example.com/sample.torrent"
+      },
+      { tab: { url: "https://example.com/page" } },
+      resolve
+    );
+  });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(response)), {
+    intercepted: true,
+    ambiguous: false
+  });
+  assert.equal(payload.torrent, true);
+  assert.equal(payload.silent, true);
   assert.equal(fixture.createdTabs.length, 1);
   assert.ok(calls.includes("/ping"));
   assert.equal(calls.filter(path => path === "/download").length, 2);

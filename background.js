@@ -591,6 +591,9 @@ function beginAutomaticCapture(downloadId) {
     pauseConfirmed: false,
     pauseUnconfirmed: false,
     terminal: false,
+    terminalState: undefined,
+    observedDownloadFields: {},
+    completedTorrent: false,
     downloadMissing: false,
     downloadLookupFailed: false,
     handoffStarted: false,
@@ -620,13 +623,34 @@ function noteAutomaticCaptureChange(
     session.userResumed = true;
   }
   if (terminal && !expectedCancellation) {
-    session.terminal = true;
+    markAutomaticCaptureTerminal(session, terminalState);
   }
   return true;
 }
 
-function automaticCaptureInvalidated(session) {
-  return session.userResumed || session.terminal || session.downloadMissing;
+function markAutomaticCaptureTerminal(session, terminalState) {
+  session.terminal = true;
+  // Completion is monotonic. A late interruption delta must not downgrade
+  // a completed item and block the non-destructive torrent handoff.
+  if (session.terminalState !== "complete" || terminalState === "complete") {
+    session.terminalState = terminalState;
+  }
+}
+
+function markAutomaticCaptureCompletedTorrent(session) {
+  session.terminal = true;
+  session.terminalState = "complete";
+  session.completedTorrent = true;
+  session.awaitingPauseConfirmation = false;
+  session.pauseConfirmed = true;
+}
+
+function automaticCaptureInvalidated(session, { allowCompletedTorrent = false } = {}) {
+  const terminalCompleted = session.terminalState === "complete";
+  return session.userResumed
+    || session.downloadMissing
+    || (session.terminal
+      && !(session.completedTorrent || (allowCompletedTorrent && terminalCompleted)));
 }
 
 function downloadStartTime(downloadItem) {
@@ -736,8 +760,12 @@ function queueActiveAutomaticCaptureReconciliation(downloadId, session) {
   session.pendingChangeReconciliation = operation.catch(() => {});
 }
 
-async function findOwnedAutomaticDownload(record, session, { waitForPause = false } = {}) {
-  if (automaticCaptureInvalidated(session)) {
+async function findOwnedAutomaticDownload(
+  record,
+  session,
+  { waitForPause = false, allowCompletedTorrent = false } = {}
+) {
+  if (automaticCaptureInvalidated(session, { allowCompletedTorrent })) {
     return null;
   }
 
@@ -757,21 +785,41 @@ async function findOwnedAutomaticDownload(record, session, { waitForPause = fals
     return null;
   }
   if (isTerminalDownload(downloadItem)) {
-    session.terminal = true;
+    if (allowCompletedTorrent
+      && downloadItem.state === "complete"
+      && isDefiniteTorrentDownload(record, downloadItem, session.observedDownloadFields)) {
+      markAutomaticCaptureCompletedTorrent(session);
+      return downloadItem;
+    }
+    markAutomaticCaptureTerminal(session, downloadItem.state);
+    return null;
+  }
+  // The completion event is authoritative for this browser-owned download.
+  // A search immediately after that event can briefly expose the previous
+  // in-progress snapshot, especially for very small files. Keep the verified
+  // torrent handoff alive without issuing a pause/cancel/erase action against
+  // that stale snapshot.
+  if (allowCompletedTorrent
+    && session.terminalState === "complete"
+    && isDefiniteTorrentDownload(record, downloadItem, session.observedDownloadFields)) {
+    markAutomaticCaptureCompletedTorrent(session);
+    return downloadItem;
+  }
+  if (session.terminal) {
     return null;
   }
   if (downloadItem.paused !== true) {
     if (waitForPause && session.awaitingPauseConfirmation && !session.pauseConfirmed) {
       const deadline = Date.now() + CAPTURE_PAUSE_SETTLE_TIMEOUT_MS;
       while (Date.now() < deadline) {
-        if (automaticCaptureInvalidated(session)) {
+        if (automaticCaptureInvalidated(session, { allowCompletedTorrent })) {
           return null;
         }
         await delay(Math.min(
           CAPTURE_PAUSE_SETTLE_INTERVAL_MS,
           Math.max(0, deadline - Date.now())
         ));
-        if (automaticCaptureInvalidated(session)) {
+        if (automaticCaptureInvalidated(session, { allowCompletedTorrent })) {
           return null;
         }
         try {
@@ -789,7 +837,22 @@ async function findOwnedAutomaticDownload(record, session, { waitForPause = fals
           return null;
         }
         if (isTerminalDownload(downloadItem)) {
-          session.terminal = true;
+          if (allowCompletedTorrent
+            && downloadItem.state === "complete"
+            && isDefiniteTorrentDownload(record, downloadItem, session.observedDownloadFields)) {
+            markAutomaticCaptureCompletedTorrent(session);
+            return downloadItem;
+          }
+          markAutomaticCaptureTerminal(session, downloadItem.state);
+          return null;
+        }
+        if (allowCompletedTorrent
+          && session.terminalState === "complete"
+          && isDefiniteTorrentDownload(record, downloadItem, session.observedDownloadFields)) {
+          markAutomaticCaptureCompletedTorrent(session);
+          return downloadItem;
+        }
+        if (session.terminal) {
           return null;
         }
         if (downloadItem.paused === true) {
@@ -1241,6 +1304,18 @@ function isTorrentDownload(downloadItem, filename) {
     );
 }
 
+function isDefiniteTorrentDownload(record, downloadItem, observedFields = {}) {
+  const observedRecord = { ...record, ...observedFields };
+  return isTorrentDownload(downloadItem, downloadItem?.filename)
+    || isTorrentDownload(downloadItem, observedRecord.filename)
+    || isTorrentDownload(observedRecord, observedRecord.filename);
+}
+
+function isCompletedTorrentDownload(record, downloadItem, observedFields = {}) {
+  return downloadItem?.state === "complete"
+    && isDefiniteTorrentDownload(record, downloadItem, observedFields);
+}
+
 function settleDownloadFilenameWait(downloadId, filename) {
   const pending = pendingDownloadFilenameWaits.get(downloadId);
   if (!pending) {
@@ -1540,7 +1615,10 @@ async function handleAutomaticCapture(
       return;
     }
 
-    let currentDownload = await findOwnedAutomaticDownload(record, session, { waitForPause: true });
+    let currentDownload = await findOwnedAutomaticDownload(record, session, {
+      waitForPause: true,
+      allowCompletedTorrent: true
+    });
     if (!currentDownload) {
       await abandonBeforeHandoff();
       return;
@@ -1552,7 +1630,9 @@ async function handleAutomaticCapture(
     // Filename settling can yield while the user resumes the item or while
     // redirects and headers update the browser's download metadata. Recheck
     // ownership after the wait and use that fresh snapshot for the handoff.
-    currentDownload = await findOwnedAutomaticDownload(record, session);
+    currentDownload = await findOwnedAutomaticDownload(record, session, {
+      allowCompletedTorrent: true
+    });
     if (!currentDownload) {
       await abandonBeforeHandoff();
       return;
@@ -1566,9 +1646,24 @@ async function handleAutomaticCapture(
     const currentFilename = normalizeCaptureFilename(currentDownload.filename);
     if (isUsableCaptureFilename(currentFilename)) {
       record.filename = currentFilename;
+    } else if (isUsableCaptureFilename(session.observedDownloadFields.filename)) {
+      record.filename = session.observedDownloadFields.filename;
     }
-    const torrent = isTorrentDownload(currentDownload, record.filename)
-      || isTorrentDownload(record, record.filename);
+    if ((!record.finalUrl || typeof record.finalUrl !== "string")
+      && typeof session.observedDownloadFields.finalUrl === "string"
+      && session.observedDownloadFields.finalUrl) {
+      record.finalUrl = session.observedDownloadFields.finalUrl;
+    }
+    if ((!record.mime || typeof record.mime !== "string")
+      && typeof session.observedDownloadFields.mime === "string"
+      && session.observedDownloadFields.mime) {
+      record.mime = session.observedDownloadFields.mime;
+    }
+    let torrent = isDefiniteTorrentDownload(
+      record,
+      currentDownload,
+      session.observedDownloadFields
+    );
     if (!automaticCaptureAllowedForDownload(record.url, record.referrer)) {
       await removePendingCaptureAndResume(record.id, session);
       return;
@@ -1586,11 +1681,48 @@ async function handleAutomaticCapture(
       await resumeAndForgetAutomaticCapture(record.id, session);
       return;
     }
-    if (!automaticCaptureAllowedForDownload(record.url, record.referrer)
-      || !await findOwnedAutomaticDownload(record, session)) {
+    if (!automaticCaptureAllowedForDownload(record.url, record.referrer)) {
       await abandonBeforeHandoff();
       return;
     }
+
+    const ownedBeforeSend = await findOwnedAutomaticDownload(record, session, {
+      allowCompletedTorrent: true
+    });
+    if (!ownedBeforeSend) {
+      await abandonBeforeHandoff();
+      return;
+    }
+    // A redirect, filename, or MIME event may have arrived while the phase
+    // updates were being persisted. Recompute from the final owned snapshot
+    // and every observed delta immediately before sending the request.
+    if (typeof ownedBeforeSend.finalUrl === "string" && ownedBeforeSend.finalUrl) {
+      record.finalUrl = ownedBeforeSend.finalUrl;
+    }
+    if (typeof ownedBeforeSend.mime === "string" && ownedBeforeSend.mime) {
+      record.mime = ownedBeforeSend.mime;
+    }
+    const ownedFilename = normalizeCaptureFilename(ownedBeforeSend.filename);
+    if (isUsableCaptureFilename(ownedFilename)) {
+      record.filename = ownedFilename;
+    } else if (isUsableCaptureFilename(session.observedDownloadFields.filename)) {
+      record.filename = session.observedDownloadFields.filename;
+    }
+    if ((!record.finalUrl || typeof record.finalUrl !== "string")
+      && typeof session.observedDownloadFields.finalUrl === "string"
+      && session.observedDownloadFields.finalUrl) {
+      record.finalUrl = session.observedDownloadFields.finalUrl;
+    }
+    if ((!record.mime || typeof record.mime !== "string")
+      && typeof session.observedDownloadFields.mime === "string"
+      && session.observedDownloadFields.mime) {
+      record.mime = session.observedDownloadFields.mime;
+    }
+    torrent = isDefiniteTorrentDownload(
+      record,
+      ownedBeforeSend,
+      session.observedDownloadFields
+    );
 
     const handoffPolicyRevision = capturePolicyRevision;
     let accepted = false;
@@ -1625,6 +1757,17 @@ async function handleAutomaticCapture(
       return;
     }
 
+    // Completion may race the signed request itself. Re-read the browser item
+    // before applying the normal active-download invalidation rule so an
+    // accepted torrent can take the non-destructive completed path.
+    if (session.terminal
+      && session.terminalState === "complete"
+      && !session.completedTorrent) {
+      await findOwnedAutomaticDownload(record, session, {
+        allowCompletedTorrent: true
+      });
+    }
+
     if (capturePolicyRevision !== handoffPolicyRevision
       || !automaticCaptureAllowedForDownload(record.url, record.referrer)
       || automaticCaptureInvalidated(session)) {
@@ -1640,8 +1783,26 @@ async function handleAutomaticCapture(
       return;
     }
 
-    if (!await findOwnedAutomaticDownload(record, session)) {
+    if (!await findOwnedAutomaticDownload(record, session, {
+      allowCompletedTorrent: true
+    })) {
       await markAmbiguousCapture(record.id);
+      return;
+    }
+
+    if (session.completedTorrent) {
+      const removed = await removePendingCapture(record.id);
+      if (!removed) {
+        schedulePendingCaptureRecovery();
+      }
+      notify(
+        backgroundText("notifications", "captureTitle", "Firelink Download Capture"),
+        backgroundText(
+          "notifications",
+          "captureMessage",
+          "Download automatically forwarded to Firelink."
+        )
+      );
       return;
     }
 
@@ -1736,6 +1897,20 @@ async function recoverPendingCaptures() {
           continue;
         }
 
+        const recoveredDownloadItem = {
+          ...downloadItem,
+          url: record.url,
+          finalUrl: typeof downloadItem.finalUrl === "string"
+            ? downloadItem.finalUrl
+            : record.finalUrl,
+          referrer: record.referrer,
+          filename: isUsableCaptureFilename(downloadItem.filename)
+            ? normalizeCaptureFilename(downloadItem.filename)
+            : record.filename,
+          cookieStoreId: record.cookieStoreId,
+          incognito: record.incognito
+        };
+
         if (record.phase === "accepted") {
           if (isTerminalDownload(downloadItem)
             || downloadItem.paused !== true
@@ -1782,9 +1957,20 @@ async function recoverPendingCaptures() {
           continue;
         }
 
-        // A terminal item cannot be resumed, even if capture was disabled
-        // while the worker was asleep.
+        // A completed torrent may have won the race with the original pause.
+        // It is safe to hand off only while the record is still pre-delivery;
+        // accepted, sending, and uncertain records must never be retried.
         if (isTerminalDownload(downloadItem)) {
+          if (isCompletedTorrentDownload(record, downloadItem)
+            && automaticCaptureAllowedForDownload(record.url, record.referrer)) {
+            await handleAutomaticCapture(
+              recoveredDownloadItem,
+              waitForDownloadFilename(recoveredDownloadItem),
+              record,
+              session
+            );
+            continue;
+          }
           const removed = await removePendingCapture(record.id);
           if (!removed) {
             schedulePendingCaptureRecovery();
@@ -1839,19 +2025,6 @@ async function recoverPendingCaptures() {
           }
           continue;
         }
-        const recoveredDownloadItem = {
-          ...downloadItem,
-          url: record.url,
-          finalUrl: typeof downloadItem.finalUrl === "string"
-            ? downloadItem.finalUrl
-            : record.finalUrl,
-          referrer: record.referrer,
-          filename: isUsableCaptureFilename(downloadItem.filename)
-            ? normalizeCaptureFilename(downloadItem.filename)
-            : record.filename,
-          cookieStoreId: record.cookieStoreId,
-          incognito: record.incognito
-        };
         await handleAutomaticCapture(
           recoveredDownloadItem,
           waitForDownloadFilename(recoveredDownloadItem),
@@ -1948,15 +2121,20 @@ async function openAutomaticMagnetFallback(url, sender, openInNewTab = false) {
   return result.ok;
 }
 
-async function captureAutomaticMagnet(request, sender) {
+async function captureAutomaticTorrent(request, sender) {
   const url = normalizeURL(request?.url || request?.href);
-  if (!url || !isMagnetURL(url)) {
+  const magnet = isMagnetURL(url);
+  const torrent = isTorrentURL(url);
+  if (!url || (!magnet && !torrent)) {
     return { intercepted: false };
   }
 
   const referer = typeof sender?.tab?.url === "string" ? sender.tab.url : "";
   await settingsLoaded;
   if (!automaticCaptureAllowedForDownload(url, referer)) {
+    if (!magnet) {
+      return { intercepted: false, ambiguous: false };
+    }
     const fallback = await openAutomaticMagnetFallback(
       url,
       sender,
@@ -1999,6 +2177,9 @@ async function captureAutomaticMagnet(request, sender) {
   }
 
   if (!accepted && !ambiguous) {
+    if (!magnet) {
+      return { intercepted: false, ambiguous: false };
+    }
     const fallback = await openAutomaticMagnetFallback(
       url,
       sender,
@@ -2011,6 +2192,12 @@ async function captureAutomaticMagnet(request, sender) {
     intercepted: accepted || requestMayHaveBeenSent,
     ambiguous
   };
+}
+
+// Keep the original action as a compatibility alias for content scripts from
+// earlier extension versions while routing both kinds through one lifecycle.
+async function captureAutomaticMagnet(request, sender) {
+  return captureAutomaticTorrent(request, sender);
 }
 
 function sendSelectionTextLinks(info, tab) {
@@ -2028,12 +2215,13 @@ function sendSelectionTextLinks(info, tab) {
 }
 
 chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
-  if (request?.action === "captureAutomaticMagnet") {
-    captureAutomaticMagnet(request, _sender)
+  if (request?.action === "captureAutomaticMagnet"
+    || request?.action === "captureAutomaticTorrent") {
+    captureAutomaticTorrent(request, _sender)
       .then(result => sendResponse(result))
       .catch(() => {
         // The content script already suppressed the user click. An unknown
-        // background failure must fail closed rather than replaying a magnet
+        // background failure must fail closed rather than replaying a torrent
         // that may have reached Firelink before the failure surfaced.
         notify(
           backgroundText("notifications", "handoffFailedTitle", "Firelink Handoff Failed"),
@@ -2048,7 +2236,8 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
     return true;
   }
 
-  if (request?.action === "reportAutomaticMagnetTimeout") {
+  if (request?.action === "reportAutomaticMagnetTimeout"
+    || request?.action === "reportAutomaticTorrentTimeout") {
     notify(
       backgroundText("notifications", "handoffFailedTitle", "Firelink Handoff Failed"),
       backgroundText(
@@ -2185,6 +2374,10 @@ function downloadChangeFields(change) {
   if (filename !== undefined && isUsableCaptureFilename(filename)) {
     fields.filename = normalizeCaptureFilename(filename);
   }
+  const mime = change.mime?.current;
+  if (typeof mime === "string" && mime) {
+    fields.mime = mime;
+  }
   return fields;
 }
 
@@ -2201,6 +2394,7 @@ async function reconcilePendingDownloadChange(change, downloadItem, fields, resu
     return;
   }
 
+  let retainedCompletedTorrent = false;
   await mutatePendingCaptureMap(current => {
     const currentRecord = current[String(change.id)];
     if (!currentRecord || !pendingCaptureMatchesDownload(currentRecord, downloadItem)) {
@@ -2213,6 +2407,20 @@ async function reconcilePendingDownloadChange(change, downloadItem, fields, resu
           [String(change.id)]: { ...currentRecord, ...fields, updatedAt: Date.now() }
         }
         : current;
+    }
+    retainedCompletedTorrent = terminal
+      && ["paused", "ready"].includes(currentRecord.phase)
+      && isCompletedTorrentDownload(currentRecord, downloadItem, fields);
+    if (retainedCompletedTorrent) {
+      return {
+        ...current,
+        [String(change.id)]: {
+          ...currentRecord,
+          ...fields,
+          phase: "ready",
+          updatedAt: Date.now()
+        }
+      };
     }
     if (["sending", "accepted", "uncertain"].includes(currentRecord.phase)) {
       return currentRecord.phase === "sending"
@@ -2231,6 +2439,9 @@ async function reconcilePendingDownloadChange(change, downloadItem, fields, resu
     delete next[String(change.id)];
     return next;
   });
+  if (retainedCompletedTorrent) {
+    void recoverPendingCaptures();
+  }
 }
 
 chrome.downloads.onChanged.addListener(change => {
@@ -2244,8 +2455,8 @@ chrome.downloads.onChanged.addListener(change => {
     settleDownloadFilenameWait(change.id, filename);
   }
   const state = change.state?.current;
-  const resumed = change.paused?.current === false;
   const terminal = isTerminalDownloadChange(change);
+  const resumed = change.paused?.current === false && !terminal;
   if (resumed || terminal) {
     settleDownloadFilenameWait(change.id);
   }
@@ -2253,6 +2464,7 @@ chrome.downloads.onChanged.addListener(change => {
   const active = activeAutomaticCaptures.has(change.id);
   if (active) {
     const session = activeAutomaticCaptures.get(change.id);
+    Object.assign(session.observedDownloadFields, fields);
     if (Object.keys(fields).length > 0) {
       void updatePendingCapture(change.id, fields).catch(() => {});
     }
@@ -2319,12 +2531,18 @@ chrome.downloads.onCreated.addListener(async downloadItem => {
     return;
   }
 
-  if (automaticCaptureInvalidated(session)) {
+  const record = createPendingCaptureRecord(downloadItem);
+  let completedTorrent = null;
+  if (session.terminal && session.terminalState === "complete") {
+    completedTorrent = await findOwnedAutomaticDownload(record, session, {
+      allowCompletedTorrent: true
+    });
+  }
+  if (automaticCaptureInvalidated(session) && !completedTorrent) {
     activeAutomaticCaptures.delete(downloadItem.id);
     filenameWait.cancel();
     return;
   }
-  const record = createPendingCaptureRecord(downloadItem);
   if (!await savePendingCapture(record)) {
     // The pause has not happened yet. Do not delete an older record that may
     // occupy a reused browser ID when the failed write never reached storage.
@@ -2339,7 +2557,14 @@ chrome.downloads.onCreated.addListener(async downloadItem => {
   // Ownership is durable before the pause, but a user resume or terminal
   // event may have arrived while that write was in flight. Never let the
   // initial pause overwrite that newer browser state.
-  if (automaticCaptureInvalidated(session)
+  if (!completedTorrent
+    && session.terminal
+    && session.terminalState === "complete") {
+    completedTorrent = await findOwnedAutomaticDownload(record, session, {
+      allowCompletedTorrent: true
+    });
+  }
+  if ((automaticCaptureInvalidated(session) && !completedTorrent)
     || !automaticCaptureAllowedForDownload(record.url, record.referrer)) {
     const removed = await removePendingCapture(record.id);
     if (!removed) {
@@ -2350,10 +2575,25 @@ chrome.downloads.onCreated.addListener(async downloadItem => {
     return;
   }
 
+  // A very small torrent can already be complete by the time onCreated is
+  // delivered. It is still eligible for a one-time handoff, but must never
+  // be sent through the pause/cancel/erase cleanup used for active items.
+  if (completedTorrent || downloadItem.state === "complete") {
+    await handleAutomaticCapture(downloadItem, filenameWait, record, session);
+    return;
+  }
+
   session.awaitingPauseConfirmation = true;
   const paused = await runDownloadAction("pause", downloadItem.id);
   if (!paused) {
     session.awaitingPauseConfirmation = false;
+    const completedTorrent = await findOwnedAutomaticDownload(record, session, {
+      allowCompletedTorrent: true
+    });
+    if (completedTorrent) {
+      await handleAutomaticCapture(downloadItem, filenameWait, record, session);
+      return;
+    }
     await removePendingCaptureAndResume(record.id, session);
     activeAutomaticCaptures.delete(record.id);
     filenameWait.cancel();
@@ -2363,6 +2603,16 @@ chrome.downloads.onCreated.addListener(async downloadItem => {
   // intent while that RPC was in flight, restore it before any handoff work;
   // otherwise the extension could leave a user-resumed download paused.
   if (automaticCaptureInvalidated(session)) {
+    let completedTorrent = null;
+    if (session.terminal && session.terminalState === "complete") {
+      completedTorrent = await findOwnedAutomaticDownload(record, session, {
+        allowCompletedTorrent: true
+      });
+    }
+    if (completedTorrent) {
+      await handleAutomaticCapture(downloadItem, filenameWait, record, session);
+      return;
+    }
     if (session.userResumed && !session.terminal && !session.downloadMissing) {
       await removePendingCaptureAndResume(record.id, session);
     } else {

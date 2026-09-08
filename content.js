@@ -1,10 +1,10 @@
 (() => {
   const allowedSchemes = new Set(["http:", "https:", "ftp:", "sftp:", "magnet:"]);
   const maxSelectionLinks = 200;
-  const magnetHandoffTimeoutMs = 25_000;
-  let magnetRequestSequence = 0;
-  const replayedMagnetAnchors = new WeakSet();
-  const pendingMagnetAnchors = new WeakSet();
+  const automaticTorrentHandoffTimeoutMs = 25_000;
+  let automaticTorrentRequestSequence = 0;
+  const replayedAutomaticTorrentAnchors = new WeakSet();
+  const pendingAutomaticTorrentAnchors = new WeakSet();
 
   function normalizedDownloadURL(rawURL) {
     try {
@@ -25,7 +25,33 @@
     return normalizedDownloadURL(rawURL);
   }
 
-  function isDefiniteMagnetDeliveryFailure(error) {
+  function isDirectTorrentURL(rawURL) {
+    try {
+      const url = new URL(rawURL);
+      return ["http:", "https:"].includes(url.protocol)
+        && url.pathname.toLowerCase().endsWith(".torrent");
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function isAutomaticTorrentURL(url) {
+    return url?.toLowerCase().startsWith("magnet:") || isDirectTorrentURL(url);
+  }
+
+  function automaticTorrentMessageAction(url) {
+    return url.toLowerCase().startsWith("magnet:")
+      ? "captureAutomaticMagnet"
+      : "captureAutomaticTorrent";
+  }
+
+  function automaticTorrentTimeoutMessageAction(url) {
+    return url.toLowerCase().startsWith("magnet:")
+      ? "reportAutomaticMagnetTimeout"
+      : "reportAutomaticTorrentTimeout";
+  }
+
+  function isDefiniteAutomaticTorrentDeliveryFailure(error) {
     const message = typeof error === "string" ? error : error?.message;
     return typeof message === "string"
       && /receiving end does not exist/i.test(message);
@@ -42,10 +68,10 @@
     return null;
   }
 
-  function replayMagnetNavigation(anchor, url) {
+  function replayAutomaticTorrentNavigation(anchor, url) {
     try {
       if (anchor && anchor.isConnected !== false && typeof anchor.click === "function") {
-        replayedMagnetAnchors.add(anchor);
+        replayedAutomaticTorrentAnchors.add(anchor);
         anchor.click();
         return;
       }
@@ -63,20 +89,20 @@
     }
   }
 
-  function installMagnetClickHandler() {
+  function installAutomaticTorrentClickHandler() {
     if (typeof document.addEventListener !== "function"
-      || globalThis.firelinkMagnetClickHandlerInstalled) {
+      || globalThis.firelinkAutomaticTorrentClickHandlerInstalled) {
       return;
     }
-    globalThis.firelinkMagnetClickHandlerInstalled = true;
+    globalThis.firelinkAutomaticTorrentClickHandlerInstalled = true;
 
     document.addEventListener("click", event => {
       const anchor = anchorFromEventTarget(event.target);
-      if (!anchor || replayedMagnetAnchors.has(anchor)) {
-        replayedMagnetAnchors.delete(anchor);
+      if (!anchor || replayedAutomaticTorrentAnchors.has(anchor)) {
+        replayedAutomaticTorrentAnchors.delete(anchor);
         return;
       }
-      if (pendingMagnetAnchors.has(anchor)) {
+      if (pendingAutomaticTorrentAnchors.has(anchor)) {
         event.preventDefault();
         event.stopImmediatePropagation?.();
         return;
@@ -87,23 +113,29 @@
         || event.altKey
         || event.ctrlKey
         || event.metaKey
-        || event.shiftKey
-        || anchor.hasAttribute?.("download")) {
+        || event.shiftKey) {
         return;
       }
 
       const url = normalizedAnchorURL(anchor);
-      if (!url || !url.toLowerCase().startsWith("magnet:")) {
+      if (!url || !isAutomaticTorrentURL(url)) {
+        return;
+      }
+      // Preserve the existing magnet behavior for links explicitly marked as
+      // downloads, while direct .torrent downloads must still be captured.
+      if (url.toLowerCase().startsWith("magnet:") && anchor.hasAttribute?.("download")) {
         return;
       }
 
       event.preventDefault();
       event.stopImmediatePropagation?.();
-      pendingMagnetAnchors.add(anchor);
-      const requestId = `${Date.now()}-${++magnetRequestSequence}`;
+      pendingAutomaticTorrentAnchors.add(anchor);
+      const requestId = `${Date.now()}-${++automaticTorrentRequestSequence}`;
       const target = anchor.getAttribute?.("target");
       const openInNewTab = typeof target === "string"
         && target.trim().toLowerCase() === "_blank";
+      const messageAction = automaticTorrentMessageAction(url);
+      const timeoutMessageAction = automaticTorrentTimeoutMessageAction(url);
       let settled = false;
       const replayOriginal = () => {
         if (settled) {
@@ -111,8 +143,8 @@
         }
         clearTimeout(timeout);
         settled = true;
-        pendingMagnetAnchors.delete(anchor);
-        replayMagnetNavigation(anchor, url);
+        pendingAutomaticTorrentAnchors.delete(anchor);
+        replayAutomaticTorrentNavigation(anchor, url);
       };
       const reportAmbiguousCapture = () => {
         if (settled) {
@@ -120,10 +152,10 @@
         }
         clearTimeout(timeout);
         settled = true;
-        pendingMagnetAnchors.delete(anchor);
+        pendingAutomaticTorrentAnchors.delete(anchor);
         try {
           const result = chrome.runtime.sendMessage({
-            action: "reportAutomaticMagnetTimeout",
+            action: timeoutMessageAction,
             requestId
           });
           result?.catch?.(() => {});
@@ -137,25 +169,37 @@
           return;
         }
         if (error) {
-          if (isDefiniteMagnetDeliveryFailure(error)) {
+          if (isDefiniteAutomaticTorrentDeliveryFailure(error)) {
             replayOriginal();
           } else {
             reportAmbiguousCapture();
           }
           return;
         }
+        if (response?.ambiguous === true) {
+          // The background already classified and reported this response as
+          // ambiguous. Suppress the original navigation without sending a
+          // second timeout report.
+          clearTimeout(timeout);
+          settled = true;
+          pendingAutomaticTorrentAnchors.delete(anchor);
+          return;
+        }
         clearTimeout(timeout);
         settled = true;
-        pendingMagnetAnchors.delete(anchor);
+        pendingAutomaticTorrentAnchors.delete(anchor);
         if (response?.intercepted !== true) {
-          replayMagnetNavigation(anchor, url);
+          replayAutomaticTorrentNavigation(anchor, url);
         }
       };
-      const timeout = setTimeout(reportAmbiguousCapture, magnetHandoffTimeoutMs);
+      const timeout = setTimeout(
+        reportAmbiguousCapture,
+        automaticTorrentHandoffTimeoutMs
+      );
 
       try {
         const result = chrome.runtime.sendMessage(
-          { action: "captureAutomaticMagnet", requestId, url, openInNewTab },
+          { action: messageAction, requestId, url, openInNewTab },
           response => {
             completeCapture(response, chrome.runtime?.lastError || null);
           }
@@ -173,7 +217,7 @@
     }, true);
   }
 
-  installMagnetClickHandler();
+  installAutomaticTorrentClickHandler();
 
   function addAnchor(anchors, anchor) {
     if (anchor && anchors.size < maxSelectionLinks) {
