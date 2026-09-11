@@ -22,7 +22,7 @@ Captured links open Firelink's Add window first. You can review them before star
 
 The Companion package is **2.2.2**. It is compatible with [Firelink `1.4.2`](https://github.com/nimbold/Firelink/releases/tag/v1.4.2).
 
-Version 2.2.2 includes the browser-local Torrent handoff fixes and the shared Chromium package prepared for a public Microsoft Edge Add-ons listing. The Partner Center upload and Microsoft certification are still separate release steps; until the listing is certified, use the manual Chromium installation below. The submission material is kept in [`store/edge/listing.md`](store/edge/listing.md).
+Version 2.2.2 includes the browser-local Torrent handoff fixes and the shared Chromium package now published through [Microsoft Edge Add-ons](https://microsoftedge.microsoft.com/addons/detail/firelink-companion/kflenjkpdoamjkalhfcllhflgahledbc). The submission material is kept in [`store/edge/listing.md`](store/edge/listing.md).
 
 The project is actively maintained. Use the [latest Companion release](https://github.com/nimbold/Firelink-Extension/releases/latest) with the [latest Firelink release](https://github.com/nimbold/Firelink/releases/latest).
 
@@ -32,11 +32,14 @@ build that supports it.
 
 ## Installation
 
-[![Install from Firefox Add-ons](https://img.shields.io/badge/Install%20from-Firefox%20Add--ons-FF7139?style=for-the-badge&logo=firefox-browser&logoColor=white)](https://addons.mozilla.org/en-US/firefox/addon/firelink-companion/)
+<p>
+  <a href="https://microsoftedge.microsoft.com/addons/detail/firelink-companion/kflenjkpdoamjkalhfcllhflgahledbc"><img src="https://img.shields.io/badge/Install%20from-Microsoft%20Edge%20Add--ons-0078D7?style=for-the-badge&logo=microsoftedge&logoColor=white" alt="Install from Microsoft Edge Add-ons" /></a>&nbsp;&nbsp;
+  <a href="https://addons.mozilla.org/en-US/firefox/addon/firelink-companion/"><img src="https://img.shields.io/badge/Install%20from-Firefox%20Add--ons-FF7139?style=for-the-badge&logo=firefox-browser&logoColor=white" alt="Install from Firefox Add-ons" /></a>
+</p>
 
-- **Chromium browsers:** Download `firelink-chromium.zip` from [the latest release](https://github.com/nimbold/Firelink-Extension/releases/latest).
+- **Microsoft Edge:** Install Firelink Companion from [Microsoft Edge Add-ons](https://microsoftedge.microsoft.com/addons/detail/firelink-companion/kflenjkpdoamjkalhfcllhflgahledbc).
+- **Other Chromium browsers:** Download `firelink-chromium.zip` from [the latest release](https://github.com/nimbold/Firelink-Extension/releases/latest).
   Follow the [manual installation guide](#manual-chromium-installation).
-- **Microsoft Edge:** The Edge Add-ons listing is being prepared. Until it is published, download the same `firelink-chromium.zip` package and follow the manual guide.
 
 After installation:
 
@@ -91,7 +94,7 @@ For the Edge store listing, see the [privacy policy](PRIVACY.md) and the [submis
 
 ## Manual Chromium installation
 
-Chromium builds are distributed as load-unpacked packages until the Edge Add-ons listing is certified and published.
+Chrome and other Chromium browsers use the load-unpacked package described below. Microsoft Edge users should install the extension from the [Edge Add-ons listing](https://microsoftedge.microsoft.com/addons/detail/firelink-companion/kflenjkpdoamjkalhfcllhflgahledbc) instead.
 
 1. Download `firelink-chromium.zip` from the [latest release](https://github.com/nimbold/Firelink-Extension/releases/latest).
 2. Extract the ZIP to a stable folder.

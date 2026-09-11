@@ -4,13 +4,13 @@ All notable changes to Firelink Companion will be documented in this file.
 
 ## [2.2.2] - 2026-09-08
 
-This release pairs with [Firelink 1.4.2](https://github.com/nimbold/Firelink/releases/tag/v1.4.2). It brings the Edge-ready package together with important Torrent handoff fixes from the 2.2.1 release candidate.
+This release pairs with [Firelink 1.4.2](https://github.com/nimbold/Firelink/releases/tag/v1.4.2). It brings the published Microsoft Edge Add-ons listing together with important Torrent handoff fixes from the 2.2.1 release candidate.
 
 ### New features
 
-- **Microsoft Edge Add-ons package preparation**
-  - Ship the shared Chromium package with localized store metadata for English, Simplified Chinese, Hebrew, Persian, Ukrainian, and Russian.
-  - Provide localized listing descriptions, permission explanations, certification notes, privacy policy guidance, and branded store artwork, responding to [Firelink #39](https://github.com/nimbold/Firelink/issues/39).
+- **Microsoft Edge Add-ons listing**
+  - Publish the shared Chromium package with localized store metadata for English, Simplified Chinese, Hebrew, Persian, Ukrainian, and Russian.
+  - Provide localized listing descriptions, permission explanations, certification notes, privacy policy guidance, and branded store artwork, completing the public listing work requested in [Firelink #39](https://github.com/nimbold/Firelink/issues/39).
 - **Browser-local Torrent attachments**
   - Send `blob:` and `data:` Torrent files from the browser to Firelink's Add window through the supported binary handoff.
 
@@ -27,7 +27,7 @@ This release pairs with [Firelink 1.4.2](https://github.com/nimbold/Firelink/rel
 
 ### Compatibility
 
-- Use [Firelink `1.4.2`](https://github.com/nimbold/Firelink/releases/tag/v1.4.2). Until the Edge listing is certified and published, Chromium users should continue with the [manual installation](README.md#manual-chromium-installation).
+- Use [Firelink `1.4.2`](https://github.com/nimbold/Firelink/releases/tag/v1.4.2). Install the extension from [Microsoft Edge Add-ons](https://microsoftedge.microsoft.com/addons/detail/firelink-companion/kflenjkpdoamjkalhfcllhflgahledbc); Chrome and other Chromium users can use the [manual installation](README.md#manual-chromium-installation).
 
 ## [2.2.0] - 2026-08-27
 
