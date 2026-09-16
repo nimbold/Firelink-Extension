@@ -9,6 +9,7 @@
   const maxTorrentBytes = 16 * 1024 * 1024;
   const localTorrentReadTimeoutMs = 10_000;
   const maxSelectionLinks = 200;
+  const selectionSnapshotMaxAgeMs = 5_000;
   const automaticTorrentHandoffTimeoutMs = 25_000;
   let automaticTorrentRequestSequence = 0;
   const replayedAutomaticTorrentAnchors = new WeakSet();
@@ -513,50 +514,163 @@
     }
   }
 
-  if (!globalThis.firelinkSelectionLinkHandlerInstalled) {
-    globalThis.firelinkSelectionLinkHandlerInstalled = true;
-    chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-      if (request?.action !== "extractSelectionLinks") {
-        return false;
-      }
+  const selectionSnapshotState = globalThis.firelinkSelectionSnapshotState
+    || (globalThis.firelinkSelectionSnapshotState = {
+      capturedAt: 0,
+      hasSelection: false,
+      links: [],
+      selectionText: ""
+    });
 
-      const selection = window.getSelection();
-      if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
-        sendResponse({ links: [] });
-        return false;
-      }
+  function readSelectionText(selection) {
+    if (!selection || typeof selection.toString !== "function") {
+      return "";
+    }
+    try {
+      const value = selection.toString();
+      return typeof value === "string" ? value : "";
+    } catch (error) {
+      return "";
+    }
+  }
 
-      try {
-        const links = new Set();
-        for (let i = 0; i < selection.rangeCount && links.size < maxSelectionLinks; i += 1) {
-          const range = selection.getRangeAt(i);
-          const container = document.createElement("div");
-          container.appendChild(range.cloneContents());
-          const anchors = new Set();
-          walkAnchors(container, anchor => {
-            addAnchor(anchors, anchor);
-            return anchors.size < maxSelectionLinks;
-          });
-          // cloneContents() can omit the <a> wrapper when a selection starts
-          // or ends inside an anchor. Include intersecting live anchors so
-          // partial-anchor selections behave consistently in Firefox and
-          // Chromium without scanning the whole document.
-          addIntersectingAnchors(range, anchors);
-          for (const anchor of anchors) {
-            if (links.size >= maxSelectionLinks) {
-              break;
-            }
-            const url = normalizedAnchorURL(anchor);
-            if (url) {
-              links.add(url);
-            }
+  function collectSelection() {
+    let selection;
+    try {
+      if (typeof window === "undefined" || typeof window.getSelection !== "function") {
+        return { links: [], selectionText: "", hasSelection: false };
+      }
+      selection = window.getSelection();
+    } catch (error) {
+      return { links: [], selectionText: "", hasSelection: false };
+    }
+
+    const selectionText = readSelectionText(selection);
+    let hasSelection = false;
+    try {
+      hasSelection = Boolean(
+        selection
+        && selection.rangeCount > 0
+        && !selection.isCollapsed
+      );
+    } catch (error) {
+      return { links: [], selectionText, hasSelection: false };
+    }
+    if (!hasSelection) {
+      return { links: [], selectionText, hasSelection: false };
+    }
+
+    const links = new Set();
+    try {
+      for (let i = 0; i < selection.rangeCount && links.size < maxSelectionLinks; i += 1) {
+        const range = selection.getRangeAt(i);
+        const container = document.createElement("div");
+        container.appendChild(range.cloneContents());
+        const anchors = new Set();
+        walkAnchors(container, anchor => {
+          addAnchor(anchors, anchor);
+          return anchors.size < maxSelectionLinks;
+        });
+        // cloneContents() can omit the <a> wrapper when a selection starts
+        // or ends inside an anchor. Include intersecting live anchors so
+        // partial-anchor selections behave consistently in Firefox and
+        // Chromium without scanning the whole document.
+        addIntersectingAnchors(range, anchors);
+        for (const anchor of anchors) {
+          if (links.size >= maxSelectionLinks) {
+            break;
+          }
+          const url = normalizedAnchorURL(anchor);
+          if (url) {
+            links.add(url);
           }
         }
-
-        sendResponse({ links: Array.from(links) });
-      } catch (error) {
-        sendResponse({ links: [] });
       }
+    } catch (error) {
+      // Preserve the selected text so the background can still extract
+      // literal URLs when DOM extraction is unavailable or interrupted.
+      return { links: [], selectionText, hasSelection: true };
+    }
+
+    return { links: Array.from(links), selectionText, hasSelection: true };
+  }
+
+  function storeSelectionSnapshot() {
+    let capture;
+    try {
+      capture = collectSelection();
+    } catch (error) {
+      // A broken page selection API must not preserve an older snapshot.
+      capture = { links: [], selectionText: "", hasSelection: false };
+    }
+    selectionSnapshotState.capturedAt = Date.now();
+    selectionSnapshotState.hasSelection = capture.hasSelection;
+    selectionSnapshotState.links = capture.links;
+    selectionSnapshotState.selectionText = capture.selectionText;
+  }
+
+  function getFreshSelectionSnapshot() {
+    if (!selectionSnapshotState.hasSelection) {
+      return null;
+    }
+    const age = Date.now() - selectionSnapshotState.capturedAt;
+    if (!Number.isFinite(age) || age < 0 || age > selectionSnapshotMaxAgeMs) {
+      return null;
+    }
+    return {
+      links: Array.isArray(selectionSnapshotState.links)
+        ? [...selectionSnapshotState.links]
+        : [],
+      selectionText: typeof selectionSnapshotState.selectionText === "string"
+        ? selectionSnapshotState.selectionText
+        : ""
+    };
+  }
+
+  function selectionResponse(capture, captureSource) {
+    return {
+      links: Array.isArray(capture.links) ? capture.links : [],
+      selectionText: typeof capture.selectionText === "string"
+        ? capture.selectionText
+        : "",
+      captureSource
+    };
+  }
+
+  if (!globalThis.firelinkSelectionContextMenuHandlerInstalled
+    && typeof document.addEventListener === "function") {
+    globalThis.firelinkSelectionContextMenuHandlerInstalled = true;
+    // Capture the DOM selection synchronously in the originating frame. A
+    // page can otherwise rerender or collapse it before the background
+    // context-menu handler finishes injecting/messaging.
+    document.addEventListener("contextmenu", storeSelectionSnapshot, true);
+  }
+
+  // A versioned action prevents an updated background script from accepting a
+  // response from an older content script that is still alive in an open tab.
+  const legacySelectionLinkHandlerAlreadyInstalled = Boolean(
+    globalThis.firelinkSelectionLinkHandlerInstalled
+  );
+  if (!globalThis.firelinkSelectionLinkHandlerV2Installed) {
+    globalThis.firelinkSelectionLinkHandlerV2Installed = true;
+    chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+      const isLegacyAction = request?.action === "extractSelectionLinks";
+      if (request?.action !== "extractSelectionLinksV2"
+        && (legacySelectionLinkHandlerAlreadyInstalled || !isLegacyAction)) {
+        return false;
+      }
+
+      const snapshot = getFreshSelectionSnapshot();
+      if (snapshot) {
+        sendResponse(selectionResponse(snapshot, "snapshot"));
+        return false;
+      }
+
+      const liveCapture = collectSelection();
+      sendResponse(selectionResponse(
+        liveCapture,
+        liveCapture.hasSelection ? "live" : "none"
+      ));
       return false;
     });
   }

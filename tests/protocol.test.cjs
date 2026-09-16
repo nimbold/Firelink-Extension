@@ -150,6 +150,39 @@ test("preserves a desktop 403 as an invalid pairing token", async () => {
   }
 });
 
+test("preserves an identified startup 503 as a retryable Firelink response", async () => {
+  const originalFetch = global.fetch;
+  const { FirelinkRequestError, signedFetch } = loadProtocol();
+
+  global.fetch = async url => {
+    if (url === "http://127.0.0.1:6412/ping") {
+      return new Response(null, {
+        status: 503,
+        headers: {
+          "X-Firelink-Server": "1",
+          "X-Firelink-Protocol-Version": "6"
+        }
+      });
+    }
+    throw new TypeError("Connection refused");
+  };
+
+  try {
+    await assert.rejects(
+      () => signedFetch("/ping", "pairing-token"),
+      error => {
+        assert.ok(error instanceof FirelinkRequestError);
+        assert.equal(error.status, 503);
+        assert.equal(error.serverReached, true);
+        assert.equal(error.requestMayHaveBeenSent, false);
+        return true;
+      }
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test("does not classify an incompatible 403 responder as the desktop app", async () => {
   const originalFetch = global.fetch;
   const { signedFetch } = loadProtocol();

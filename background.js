@@ -31,6 +31,7 @@ const TORRENT_MIME_TYPES = new Set([
   "application/x-torrent"
 ]);
 const MAX_HANDOFF_URLS = 200;
+const SELECTION_LINK_MESSAGE_ACTION = "extractSelectionLinksV2";
 const PENDING_CAPTURE_STORAGE_KEY = "pendingAutomaticCaptures";
 const PENDING_CAPTURE_RECOVERY_ALARM = "firelink-pending-capture-recovery";
 const PENDING_CAPTURE_RECOVERY_DELAY_MS = 30_000;
@@ -396,6 +397,30 @@ function notify(title, message) {
   } catch (error) {
     return false;
   }
+}
+
+function reportSelectedLinkCapture(stage, frameId, source, count, reason) {
+  if (typeof console === "undefined" || typeof console.debug !== "function") {
+    return;
+  }
+  console.debug("Firelink selected-link capture", {
+    stage,
+    frameId: Number.isSafeInteger(frameId) && frameId >= 0 ? frameId : null,
+    source: typeof source === "string" ? source : "none",
+    count: Number.isSafeInteger(count) && count >= 0 ? count : 0,
+    reason: typeof reason === "string" ? reason : "unknown"
+  });
+}
+
+function notifyNoSelectedLinks() {
+  notify(
+    backgroundText("notifications", "noLinksTitle", "No downloadable links found"),
+    backgroundText(
+      "notifications",
+      "noLinksMessage",
+      "The selection contains no downloadable links. Select links with actual download URLs and try again."
+    )
+  );
 }
 
 function createLaunchTab() {
@@ -2342,10 +2367,33 @@ async function captureAutomaticMagnet(request, sender) {
   return captureAutomaticTorrent(request, sender);
 }
 
-function sendSelectionTextLinks(info, tab) {
-  const urls = extractURLsFromText(info.selectionText);
+const selectionCaptureSources = new Set(["live", "snapshot", "text-fallback", "none"]);
+
+function normalizeSelectionResponse(response) {
+  if (!response || !Array.isArray(response.links)) {
+    return null;
+  }
+  return {
+    links: normalizeURLList(response.links),
+    selectionText: typeof response.selectionText === "string"
+      ? response.selectionText
+      : "",
+    captureSource: selectionCaptureSources.has(response.captureSource)
+      ? response.captureSource
+      : "live"
+  };
+}
+
+function contextMenuFrameId(info) {
+  return Number.isSafeInteger(info?.frameId) && info.frameId >= 0
+    ? info.frameId
+    : 0;
+}
+
+function sendSelectionTextLinks(info, tab, selectionText = info?.selectionText) {
+  const urls = extractURLsFromText(selectionText);
   if (urls.length === 0) {
-    return false;
+    return urls;
   }
   sendContextMenuHandoff(urls, tab?.url || "", {
     cookieStoreId: tab?.cookieStoreId,
@@ -2353,7 +2401,78 @@ function sendSelectionTextLinks(info, tab) {
     batch: true,
     batchName: tab?.title
   });
-  return true;
+  return urls;
+}
+
+function handleSelectedLinkFallback(info, tab, frameId, selectionText, reason) {
+  const urls = sendSelectionTextLinks(info, tab, selectionText);
+  if (urls.length > 0) {
+    reportSelectedLinkCapture("text-fallback", frameId, "text-fallback", urls.length, reason);
+    return true;
+  }
+  reportSelectedLinkCapture("no-links", frameId, "none", 0, reason);
+  notifyNoSelectedLinks();
+  return false;
+}
+
+function handleSelectedLinkResponse(response, info, tab, frameId, reason) {
+  if (response?.links?.length > 0) {
+    reportSelectedLinkCapture(
+      "handoff",
+      frameId,
+      response.captureSource,
+      response.links.length,
+      "anchor-links"
+    );
+    sendContextMenuHandoff(response.links, tab?.url || "", {
+      cookieStoreId: tab?.cookieStoreId,
+      incognito: tab?.incognito === true,
+      batch: true,
+      batchName: tab?.title
+    });
+    return true;
+  }
+
+  const selectionText = response?.selectionText || info?.selectionText || "";
+  return handleSelectedLinkFallback(info, tab, frameId, selectionText, reason);
+}
+
+async function requestSelectionResponse(tabId, frameId) {
+  const messageArguments = [
+    tabId,
+    { action: SELECTION_LINK_MESSAGE_ACTION },
+    { frameId }
+  ];
+  const direct = await callExtensionApi(chrome.tabs, "sendMessage", messageArguments);
+  const directResponse = direct.ok ? normalizeSelectionResponse(direct.value) : null;
+  if (directResponse) {
+    return { response: directResponse, reason: "message" };
+  }
+
+  if (!chrome.scripting?.executeScript) {
+    return {
+      response: null,
+      reason: direct.ok ? "malformed-message" : "message-unavailable"
+    };
+  }
+
+  const injected = await callExtensionApi(chrome.scripting, "executeScript", [{
+    target: { tabId, frameIds: [frameId] },
+    files: ["content.js"]
+  }]);
+  if (!injected.ok) {
+    return { response: null, reason: "injection-unavailable" };
+  }
+
+  const retry = await callExtensionApi(chrome.tabs, "sendMessage", messageArguments);
+  const retryResponse = retry.ok ? normalizeSelectionResponse(retry.value) : null;
+  if (retryResponse) {
+    return { response: retryResponse, reason: "injected-message" };
+  }
+  return {
+    response: null,
+    reason: retry.ok ? "malformed-injected-message" : "injected-message-unavailable"
+  };
 }
 
 chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
@@ -2440,41 +2559,41 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
     return;
   }
 
-  if (!Number.isSafeInteger(tab?.id) || tab.id < 0
-    || !chrome.scripting?.executeScript || !chrome.tabs?.sendMessage) {
-    sendSelectionTextLinks(info, tab);
+  const frameId = contextMenuFrameId(info);
+  if (!Number.isSafeInteger(tab?.id) || tab.id < 0 || !chrome.tabs?.sendMessage) {
+    handleSelectedLinkFallback(info, tab, frameId, info.selectionText, "tab-or-messaging-unavailable");
     return;
   }
 
-  void callExtensionApi(chrome.scripting, "executeScript", [{
-    target: { tabId: tab.id },
-    files: ["content.js"]
-  }]).then(injected => {
-    if (!injected.ok) {
-      sendSelectionTextLinks(info, tab);
-      return;
-    }
-
-    return callExtensionApi(chrome.tabs, "sendMessage", [
-      tab.id,
-      { action: "extractSelectionLinks" }
-    ]).then(result => {
-      const response = result.ok ? result.value : null;
-      if (Array.isArray(response?.links) && response.links.length > 0) {
-        sendContextMenuHandoff(response.links, tab?.url || "", {
-          cookieStoreId: tab?.cookieStoreId,
-          incognito: tab?.incognito === true,
-          batch: true,
-          batchName: tab?.title
-        });
+  void requestSelectionResponse(tab.id, frameId)
+    .then(result => {
+      if (result.response) {
+        handleSelectedLinkResponse(
+          result.response,
+          info,
+          tab,
+          frameId,
+          result.reason
+        );
         return;
       }
-
-      sendSelectionTextLinks(info, tab);
+      handleSelectedLinkFallback(
+        info,
+        tab,
+        frameId,
+        info.selectionText,
+        result.reason
+      );
+    })
+    .catch(() => {
+      handleSelectedLinkFallback(
+        info,
+        tab,
+        frameId,
+        info.selectionText,
+        "selection-capture-failed"
+      );
     });
-  }).catch(() => {
-    sendSelectionTextLinks(info, tab);
-  });
 });
 
 function runDownloadAction(action, ...args) {

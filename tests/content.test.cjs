@@ -17,6 +17,7 @@ test("content link extraction accepts magnet links", () => {
       getSelection() {
         return {
           rangeCount: 1,
+          toString() { return ""; },
           getRangeAt() {
             const container = {
               querySelectorAll() {
@@ -46,10 +47,192 @@ test("content link extraction accepts magnet links", () => {
 
   vm.runInContext(contentSource, context);
   let response;
-  listener({ action: "extractSelectionLinks" }, {}, value => { response = value; });
+  listener({ action: "extractSelectionLinksV2" }, {}, value => { response = value; });
 
   assert.deepEqual(JSON.parse(JSON.stringify(response)), {
-    links: ["magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"]
+    links: ["magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"],
+    selectionText: "",
+    captureSource: "live"
+  });
+});
+
+test("content link extraction uses a context-menu snapshot after the live selection is lost", () => {
+  let messageListener;
+  let contextMenuListener;
+  let selection;
+  const anchor = {
+    nodeType: 1,
+    tagName: "A",
+    parentElement: null,
+    getAttribute(name) {
+      return name === "href" ? "https://example.com/snapshot.zip" : null;
+    },
+    querySelectorAll() { return []; }
+  };
+  const range = {
+    cloneContents: () => ({}),
+    startContainer: anchor,
+    endContainer: anchor,
+    commonAncestorContainer: anchor,
+    intersectsNode(node) { return node === anchor; }
+  };
+  selection = {
+    rangeCount: 1,
+    isCollapsed: false,
+    getRangeAt() { return range; },
+    toString() { return "Download snapshot"; }
+  };
+  const context = vm.createContext({
+    URL,
+    document: {
+      baseURI: "https://example.com/page",
+      addEventListener(type, listener) {
+        if (type === "contextmenu") contextMenuListener = listener;
+      },
+      createElement() {
+        return {
+          appendChild() {},
+          querySelectorAll() { return [anchor]; }
+        };
+      }
+    },
+    window: {
+      getSelection() { return selection; }
+    },
+    chrome: {
+      runtime: {
+        onMessage: {
+          addListener(value) { messageListener = value; }
+        }
+      }
+    }
+  });
+
+  vm.runInContext(contentSource, context);
+  contextMenuListener({});
+  selection = {
+    rangeCount: 0,
+    isCollapsed: true,
+    toString() { return ""; }
+  };
+
+  let response;
+  messageListener({ action: "extractSelectionLinksV2" }, {}, value => { response = value; });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(response)), {
+    links: ["https://example.com/snapshot.zip"],
+    selectionText: "Download snapshot",
+    captureSource: "snapshot"
+  });
+});
+
+test("content link extraction clears an old snapshot when a new context menu has no selection", () => {
+  let messageListener;
+  let contextMenuListener;
+  let selection;
+  const anchor = {
+    nodeType: 1,
+    tagName: "A",
+    parentElement: null,
+    getAttribute(name) {
+      return name === "href" ? "https://example.com/old.zip" : null;
+    },
+    querySelectorAll() { return []; }
+  };
+  const range = {
+    cloneContents: () => ({}),
+    startContainer: anchor,
+    endContainer: anchor,
+    commonAncestorContainer: anchor,
+    intersectsNode(node) { return node === anchor; }
+  };
+  selection = {
+    rangeCount: 1,
+    isCollapsed: false,
+    getRangeAt() { return range; },
+    toString() { return "Old selection"; }
+  };
+  const context = vm.createContext({
+    URL,
+    document: {
+      baseURI: "https://example.com/page",
+      addEventListener(type, listener) {
+        if (type === "contextmenu") contextMenuListener = listener;
+      },
+      createElement() {
+        return {
+          appendChild() {},
+          querySelectorAll() { return [anchor]; }
+        };
+      }
+    },
+    window: {
+      getSelection() { return selection; }
+    },
+    chrome: {
+      runtime: {
+        onMessage: {
+          addListener(value) { messageListener = value; }
+        }
+      }
+    }
+  });
+
+  vm.runInContext(contentSource, context);
+  contextMenuListener({});
+  selection = {
+    rangeCount: 0,
+    isCollapsed: true,
+    toString() { return ""; }
+  };
+  contextMenuListener({});
+
+  let response;
+  messageListener({ action: "extractSelectionLinksV2" }, {}, value => { response = value; });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(response)), {
+    links: [],
+    selectionText: "",
+    captureSource: "none"
+  });
+});
+
+test("content link extraction clears the snapshot when the selection API fails", () => {
+  let messageListener;
+  let contextMenuListener;
+  const context = vm.createContext({
+    URL,
+    document: {
+      baseURI: "https://example.com/page",
+      addEventListener(type, listener) {
+        if (type === "contextmenu") contextMenuListener = listener;
+      }
+    },
+    window: {
+      getSelection() {
+        throw new Error("selection unavailable");
+      }
+    },
+    chrome: {
+      runtime: {
+        onMessage: {
+          addListener(value) { messageListener = value; }
+        }
+      }
+    }
+  });
+
+  vm.runInContext(contentSource, context);
+  assert.doesNotThrow(() => contextMenuListener({}));
+
+  let response;
+  assert.doesNotThrow(() => {
+    messageListener({ action: "extractSelectionLinksV2" }, {}, value => { response = value; });
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(response)), {
+    links: [],
+    selectionText: "",
+    captureSource: "none"
   });
 });
 
@@ -874,7 +1057,8 @@ test("content link extraction includes an anchor intersected by a partial select
               commonAncestorContainer: anchor,
               intersectsNode(node) { return node === anchor; }
             };
-          }
+          },
+          toString() { return ""; }
         };
       }
     },
@@ -889,10 +1073,12 @@ test("content link extraction includes an anchor intersected by a partial select
 
   vm.runInContext(contentSource, context);
   let response;
-  listener({ action: "extractSelectionLinks" }, {}, value => { response = value; });
+  listener({ action: "extractSelectionLinksV2" }, {}, value => { response = value; });
 
   assert.deepEqual(JSON.parse(JSON.stringify(response)), {
-    links: ["https://example.com/partial.zip"]
+    links: ["https://example.com/partial.zip"],
+    selectionText: "",
+    captureSource: "live"
   });
 });
 
@@ -908,7 +1094,12 @@ test("content link extraction ignores a collapsed caret inside an anchor", () =>
     },
     window: {
       getSelection() {
-        return { rangeCount: 1, isCollapsed: true, getRangeAt() { return {}; } };
+        return {
+          rangeCount: 1,
+          isCollapsed: true,
+          getRangeAt() { return {}; },
+          toString() { return ""; }
+        };
       }
     },
     chrome: {
@@ -922,9 +1113,13 @@ test("content link extraction ignores a collapsed caret inside an anchor", () =>
 
   vm.runInContext(contentSource, context);
   let response;
-  listener({ action: "extractSelectionLinks" }, {}, value => { response = value; });
+  listener({ action: "extractSelectionLinksV2" }, {}, value => { response = value; });
 
-  assert.deepEqual(JSON.parse(JSON.stringify(response)), { links: [] });
+  assert.deepEqual(JSON.parse(JSON.stringify(response)), {
+    links: [],
+    selectionText: "",
+    captureSource: "none"
+  });
 });
 
 test("content link extraction ignores anchors without href attributes", () => {
@@ -958,7 +1153,8 @@ test("content link extraction ignores anchors without href attributes", () => {
               commonAncestorContainer: anchor,
               intersectsNode(node) { return node === anchor; }
             };
-          }
+          },
+          toString() { return ""; }
         };
       }
     },
@@ -973,7 +1169,11 @@ test("content link extraction ignores anchors without href attributes", () => {
 
   vm.runInContext(contentSource, context);
   let response;
-  listener({ action: "extractSelectionLinks" }, {}, value => { response = value; });
+  listener({ action: "extractSelectionLinksV2" }, {}, value => { response = value; });
 
-  assert.deepEqual(JSON.parse(JSON.stringify(response)), { links: [] });
+  assert.deepEqual(JSON.parse(JSON.stringify(response)), {
+    links: [],
+    selectionText: "",
+    captureSource: "live"
+  });
 });

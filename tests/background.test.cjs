@@ -30,7 +30,22 @@ function createBackgroundContext(signedFetch, options = {}) {
   const deferredStorageCallbacks = [];
   let deferredStorageGetCount = 0;
   let downloadSearchCount = 0;
+  let sendMessageCallCount = 0;
   let persistedPendingCaptures = options.pendingCaptures || {};
+  const selectionResponseForCall = () => {
+    if (Array.isArray(options.selectionResponses)) {
+      const index = Math.min(sendMessageCallCount - 1, options.selectionResponses.length - 1);
+      return options.selectionResponses[index] || { links: [] };
+    }
+    return options.selectionResponse || { links: [] };
+  };
+  const sendMessageErrorForCall = () => {
+    if (Array.isArray(options.sendMessageErrors)) {
+      const index = Math.min(sendMessageCallCount - 1, options.sendMessageErrors.length - 1);
+      return options.sendMessageErrors[index] || null;
+    }
+    return options.sendMessageError || null;
+  };
   const chrome = {
     contextMenus: {
       onClicked: {
@@ -308,17 +323,25 @@ function createBackgroundContext(signedFetch, options = {}) {
         }
         callback?.({ id, ...details });
       },
-      sendMessage(tabId, message, callback) {
-        sentMessages.push({ tabId, message });
+      sendMessage(tabId, message, optionsOrCallback, callback) {
+        const sendOptions = typeof optionsOrCallback === "function"
+          ? undefined
+          : optionsOrCallback;
+        const responseCallback = typeof optionsOrCallback === "function"
+          ? optionsOrCallback
+          : callback;
+        sendMessageCallCount += 1;
+        sentMessages.push({ tabId, message, options: sendOptions });
+        const sendMessageError = sendMessageErrorForCall();
         if (options.promiseOnly) {
-          return options.sendMessageError
-            ? Promise.reject(new Error(options.sendMessageError))
-            : Promise.resolve(options.selectionResponse || { links: [] });
+          return sendMessageError
+            ? Promise.reject(new Error(sendMessageError))
+            : Promise.resolve(selectionResponseForCall());
         }
-        chrome.runtime.lastError = options.sendMessageError
-          ? { message: options.sendMessageError }
+        chrome.runtime.lastError = sendMessageError
+          ? { message: sendMessageError }
           : null;
-        callback?.(options.selectionResponse || { links: [] });
+        responseCallback?.(selectionResponseForCall());
         chrome.runtime.lastError = null;
       }
     }
@@ -541,6 +564,55 @@ test("creating launch tab is not success when authenticated discovery times out"
   assert.equal(fixture.createdTabs[0].active, true);
   assert.deepEqual(fixture.removedTabs, [1]);
   assert.equal(fixture.createdNotifications.at(-1)[0].title, "Firelink Was Not Opened");
+});
+
+test("launch fallback retries startup 503 until Firelink is ready", async () => {
+  let initialDownload = true;
+  let pingCalls = 0;
+  let downloadCalls = 0;
+  const fixture = createBackgroundContext(
+    async path => {
+      if (path === "/download" && initialDownload) {
+        initialDownload = false;
+        downloadCalls += 1;
+        throw { serverReached: false, requestMayHaveBeenSent: false };
+      }
+      if (path === "/ping") {
+        pingCalls += 1;
+        if (pingCalls < 3) {
+          throw { serverReached: true, status: 503 };
+        }
+        return { ok: true };
+      }
+      if (path === "/download") {
+        downloadCalls += 1;
+        return { ok: true };
+      }
+      throw new Error(`unexpected path: ${path}`);
+    },
+    {
+      setTimeout: callback => {
+        callback();
+        return 1;
+      }
+    }
+  );
+
+  const accepted = await vm.runInContext(
+    'sendToFirelink(["https://example.com/file.zip"])',
+    fixture.context
+  );
+
+  assert.equal(accepted, true);
+  assert.equal(pingCalls, 3);
+  assert.equal(downloadCalls, 2);
+  assert.deepEqual(fixture.removedTabs, [1]);
+  assert.equal(
+    fixture.createdNotifications.some(([notification]) =>
+      notification.title === "Firelink Connection Rejected"
+    ),
+    false
+  );
 });
 
 test("launch fallback reports an invalid pairing token instead of a startup timeout", async () => {
@@ -2887,7 +2959,8 @@ test("selected-link context menu prefers extracted anchor links", async () => {
   fixture.listeners.contextMenu(
     {
       menuItemId: "download-selected-with-firelink",
-      selectionText: "https://fallback.example/ignored.zip"
+      selectionText: "https://fallback.example/ignored.zip",
+      frameId: 0
     },
     {
       id: 0,
@@ -2898,13 +2971,11 @@ test("selected-link context menu prefers extracted anchor links", async () => {
   );
   await new Promise(resolve => setImmediate(resolve));
 
-  assert.deepEqual(JSON.parse(JSON.stringify(fixture.executedScripts[0])), {
-    target: { tabId: 0 },
-    files: ["content.js"]
-  });
+  assert.deepEqual(fixture.executedScripts, []);
   assert.deepEqual(JSON.parse(JSON.stringify(fixture.sentMessages[0])), {
     tabId: 0,
-    message: { action: "extractSelectionLinks" }
+    message: { action: "extractSelectionLinksV2" },
+    options: { frameId: 0 }
   });
   assert.deepEqual(JSON.parse(JSON.stringify(payload)), {
     urls: ["https://example.com/one.zip", "https://example.com/two.zip"],
@@ -2932,7 +3003,8 @@ test("selected-link context menu rejects malformed injected responses", async ()
   fixture.listeners.contextMenu(
     {
       menuItemId: "download-selected-with-firelink",
-      selectionText: "(https://fallback.example/file.zip),"
+      selectionText: "(https://fallback.example/file.zip),",
+      frameId: 0
     },
     {
       id: 0,
@@ -2941,9 +3013,168 @@ test("selected-link context menu rejects malformed injected responses", async ()
   );
   await new Promise(resolve => setImmediate(resolve));
 
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.executedScripts[0])), {
+    target: { tabId: 0, frameIds: [0] },
+    files: ["content.js"]
+  });
+  assert.equal(fixture.sentMessages.length, 2);
   assert.deepEqual(JSON.parse(JSON.stringify(payload.urls)), [
     "https://fallback.example/file.zip"
   ]);
+});
+
+test("selected-link context menu targets the originating child frame", async () => {
+  let payload = null;
+  const fixture = createBackgroundContext(
+    async (_path, _token, request) => {
+      payload = request.payload;
+      return { ok: true };
+    },
+    {
+      selectionResponse: {
+        links: ["https://example.com/frame-one.zip", "https://example.com/frame-two.zip"],
+        selectionText: "Frame links",
+        captureSource: "snapshot"
+      }
+    }
+  );
+
+  fixture.listeners.contextMenu(
+    {
+      menuItemId: "download-selected-with-firelink",
+      selectionText: "Frame links",
+      frameId: 7
+    },
+    {
+      id: 12,
+      url: "https://example.com/page",
+      title: "Embedded downloads"
+    }
+  );
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.deepEqual(fixture.executedScripts, []);
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.sentMessages[0])), {
+    tabId: 12,
+    message: { action: "extractSelectionLinksV2" },
+    options: { frameId: 7 }
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(payload.urls)), [
+    "https://example.com/frame-one.zip",
+    "https://example.com/frame-two.zip"
+  ]);
+});
+
+test("selected-link context menu injects and retries in the originating frame", async () => {
+  let payload = null;
+  const fixture = createBackgroundContext(
+    async (_path, _token, request) => {
+      payload = request.payload;
+      return { ok: true };
+    },
+    {
+      sendMessageErrors: ["content script unavailable", null],
+      selectionResponse: {
+        links: ["https://example.com/injected.zip"],
+        selectionText: "Injected link",
+        captureSource: "live"
+      }
+    }
+  );
+
+  fixture.listeners.contextMenu(
+    {
+      menuItemId: "download-selected-with-firelink",
+      selectionText: "Injected link",
+      frameId: 7
+    },
+    { id: 12, url: "https://example.com/page" }
+  );
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.executedScripts)), [{
+    target: { tabId: 12, frameIds: [7] },
+    files: ["content.js"]
+  }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.sentMessages)), [
+    {
+      tabId: 12,
+      message: { action: "extractSelectionLinksV2" },
+      options: { frameId: 7 }
+    },
+    {
+      tabId: 12,
+      message: { action: "extractSelectionLinksV2" },
+      options: { frameId: 7 }
+    }
+  ]);
+  assert.deepEqual(JSON.parse(JSON.stringify(payload.urls)), [
+    "https://example.com/injected.zip"
+  ]);
+});
+
+test("selected-link context menu falls back to text captured by the content script", async () => {
+  let payload = null;
+  const fixture = createBackgroundContext(
+    async (_path, _token, request) => {
+      payload = request.payload;
+      return { ok: true };
+    },
+    {
+      selectionResponse: {
+        links: [],
+        selectionText: "(https://example.com/snapshot-text.zip),",
+        captureSource: "snapshot"
+      }
+    }
+  );
+
+  fixture.listeners.contextMenu(
+    {
+      menuItemId: "download-selected-with-firelink",
+      selectionText: "selection label only",
+      frameId: 3
+    },
+    { id: 12, url: "https://example.com/page" }
+  );
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.deepEqual(JSON.parse(JSON.stringify(payload.urls)), [
+    "https://example.com/snapshot-text.zip"
+  ]);
+});
+
+test("selected-link context menu explains when no downloadable links are found", async () => {
+  let handoffCalls = 0;
+  const fixture = createBackgroundContext(
+    async () => {
+      handoffCalls += 1;
+      return { ok: true };
+    },
+    {
+      selectionResponse: {
+        links: [],
+        selectionText: "Download the report"
+      }
+    }
+  );
+
+  fixture.listeners.contextMenu(
+    {
+      menuItemId: "download-selected-with-firelink",
+      selectionText: "Download the report",
+      frameId: 0
+    },
+    { id: 12, url: "https://example.com/page" }
+  );
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(fixture.createdNotifications.at(-1)[0].title, "No Downloadable Links Found");
+  assert.match(
+    fixture.createdNotifications.at(-1)[0].message,
+    /actual download URLs/i
+  );
+  assert.equal(handoffCalls, 0);
 });
 
 test("hands magnet links to Firelink through the existing link menu", async () => {

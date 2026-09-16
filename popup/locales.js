@@ -73,7 +73,9 @@ const POPUP_LOCALES = Object.freeze({
       captureMessage: "Download automatically forwarded to Firelink.",
       mediaTitle: "Firelink Media Fetch",
       mediaOpenPage: "Open a normal web page, then try Fetch media again.",
-      mediaSent: "Media page sent to Firelink."
+      mediaSent: "Media page sent to Firelink.",
+      noLinksTitle: "No Downloadable Links Found",
+      noLinksMessage: "The selection contains no downloadable links. Select links with actual download URLs and try again."
     }
   },
   "zh-CN": {
@@ -150,7 +152,9 @@ const POPUP_LOCALES = Object.freeze({
       captureMessage: "下载已自动转发到 Firelink。",
       mediaTitle: "Firelink 媒体获取",
       mediaOpenPage: "请先打开普通网页，然后重试“获取媒体”。",
-      mediaSent: "媒体页面已发送到 Firelink。"
+      mediaSent: "媒体页面已发送到 Firelink。",
+      noLinksTitle: "未找到可下载的链接",
+      noLinksMessage: "所选内容中没有可下载的链接。请选择包含实际下载地址的链接，然后重试。"
     }
   },
   he: {
@@ -227,7 +231,9 @@ const POPUP_LOCALES = Object.freeze({
       captureMessage: "ההורדה הועברה אוטומטית ל-Firelink.",
       mediaTitle: "אחזור מדיה ב-Firelink",
       mediaOpenPage: "פתח דף אינטרנט רגיל ונסה שוב את \"אחזור מדיה\".",
-      mediaSent: "דף המדיה נשלח ל-Firelink."
+      mediaSent: "דף המדיה נשלח ל-Firelink.",
+      noLinksTitle: "לא נמצאו קישורים להורדה",
+      noLinksMessage: "הבחירה אינה מכילה קישורים להורדה. בחר קישורים עם כתובות הורדה ממשיות ונסה שוב."
     }
   },
   fa: {
@@ -304,7 +310,9 @@ const POPUP_LOCALES = Object.freeze({
       captureMessage: "دانلود به‌صورت خودکار به Firelink فرستاده شد.",
       mediaTitle: "دریافت رسانه در Firelink",
       mediaOpenPage: "ابتدا یک صفحهٔ وب معمولی باز کنید و سپس دوباره «دریافت رسانه» را امتحان کنید.",
-      mediaSent: "صفحهٔ رسانه به Firelink فرستاده شد."
+      mediaSent: "صفحهٔ رسانه به Firelink فرستاده شد.",
+      noLinksTitle: "پیوند قابل دانلودی پیدا نشد",
+      noLinksMessage: "انتخاب شما پیوند قابل دانلودی ندارد. پیوندهایی با نشانی واقعی دانلود انتخاب کنید و دوباره تلاش کنید."
     }
   },
   uk: {
@@ -381,7 +389,9 @@ const POPUP_LOCALES = Object.freeze({
       captureMessage: "Завантаження автоматично передано до Firelink.",
       mediaTitle: "Отримання медіа Firelink",
       mediaOpenPage: "Відкрийте звичайну вебсторінку й повторіть спробу «Отримати медіа».",
-      mediaSent: "Медіасторінку надіслано до Firelink."
+      mediaSent: "Медіасторінку надіслано до Firelink.",
+      noLinksTitle: "Завантажуваних посилань не знайдено",
+      noLinksMessage: "У вибраному фрагменті немає завантажуваних посилань. Виберіть посилання зі справжніми адресами завантаження й повторіть спробу."
     }
   },
   ru: {
@@ -458,7 +468,9 @@ const POPUP_LOCALES = Object.freeze({
       captureMessage: "Загрузка автоматически передана в Firelink.",
       mediaTitle: "Получение медиа в Firelink",
       mediaOpenPage: "Сначала откройте обычную веб-страницу, затем повторите попытку «Получить медиа».",
-      mediaSent: "Страница с медиа отправлена в Firelink."
+      mediaSent: "Страница с медиа отправлена в Firelink.",
+      noLinksTitle: "Ссылки для загрузки не найдены",
+      noLinksMessage: "В выделенном фрагменте нет ссылок для загрузки. Выберите ссылки с настоящими адресами загрузки и повторите попытку."
     }
   }
 });

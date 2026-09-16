@@ -103,6 +103,14 @@
 
     requireProtocolVersion(response, PROTOCOL_VERSION);
 
+    if (response.status === 503) {
+      throw new FirelinkRequestError(
+        "Firelink is still starting",
+        503,
+        true
+      );
+    }
+
     if (response.status === 403) {
       throw new FirelinkRequestError(
         "Firelink rejected the pairing token",
@@ -221,6 +229,14 @@
       );
       if (protocolError) {
         throw protocolError;
+      }
+      const startupError = error.errors?.find(
+        candidate => candidate instanceof FirelinkRequestError
+          && candidate.status === 503
+          && candidate.serverReached
+      );
+      if (startupError) {
+        throw startupError;
       }
       throw new FirelinkRequestError("Firelink is unavailable");
     }
