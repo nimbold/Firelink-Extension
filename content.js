@@ -11,6 +11,13 @@
   const maxSelectionLinks = 200;
   const selectionSnapshotMaxAgeMs = 5_000;
   const automaticTorrentHandoffTimeoutMs = 25_000;
+  const mediaSnapshotMessageAction = "collectMediaSnapshotV1";
+  const mediaDocumentIdentityPort = "firelink-media-document-v1";
+  const mediaDocumentIdentityMessage = "document-identity";
+  const mediaDocumentIdentityAck = "document-identity-ack";
+  const mediaDiscoveryKeepalivePort = "firelink-media-discovery-v1";
+  const mediaDiscoveryKeepaliveIntervalMs = 2_000;
+  const maxMediaSnapshotURLs = 64;
   let automaticTorrentRequestSequence = 0;
   const replayedAutomaticTorrentAnchors = new WeakSet();
   const pendingAutomaticTorrentAnchors = new WeakSet();
@@ -21,6 +28,132 @@
       return allowedSchemes.has(url.protocol) ? url.href : null;
     } catch (e) {
       return null;
+    }
+  }
+
+  function mediaManifestKind(rawURL) {
+    try {
+      const url = new URL(rawURL, document.baseURI);
+      if (url.protocol !== "http:" && url.protocol !== "https:") {
+        return null;
+      }
+      if (url.username || url.password) {
+        return null;
+      }
+      const pathname = url.pathname.toLowerCase();
+      if (pathname.endsWith(".m3u8")) return "m3u8";
+      if (pathname.endsWith(".mpd")) return "mpd";
+      if (pathname.endsWith(".ism/manifest")) return "ism/manifest";
+      if (pathname.endsWith(".ism")) return "ism";
+      return null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function collectMediaSnapshot() {
+    const urls = [];
+    const seen = new Set();
+    const add = rawURL => {
+      if (urls.length >= maxMediaSnapshotURLs || typeof rawURL !== "string") {
+        return;
+      }
+      let url;
+      try {
+        url = new URL(rawURL, document.baseURI);
+      } catch (error) {
+        return;
+      }
+      if (!mediaManifestKind(url.href) || seen.has(url.href)) {
+        return;
+      }
+      seen.add(url.href);
+      urls.push(url.href);
+    };
+
+    try {
+      const performanceAPI = globalThis.performance;
+      const entries = typeof performanceAPI?.getEntriesByType === "function"
+        ? performanceAPI.getEntriesByType("resource")
+        : [];
+      for (const entry of Array.from(entries || [])) {
+        add(entry?.name);
+        if (urls.length >= maxMediaSnapshotURLs) {
+          return { urls };
+        }
+      }
+    } catch (error) {
+      // A page-controlled performance object must not prevent media handoff.
+    }
+
+    try {
+      const elements = typeof document.querySelectorAll === "function"
+        ? document.querySelectorAll("audio, video, source")
+        : [];
+      for (const element of Array.from(elements || [])) {
+        add(element?.currentSrc);
+        add(element?.src);
+        if (typeof element?.getAttribute === "function") {
+          add(element.getAttribute("src"));
+        }
+        if (urls.length >= maxMediaSnapshotURLs) {
+          break;
+        }
+      }
+    } catch (error) {
+      // DOM access can fail on a detached or restricted document; request
+      // observation and the page fallback remain available.
+    }
+
+    return { urls };
+  }
+
+  function sendMediaDocumentIdentity(nonce) {
+    if (typeof nonce !== "string"
+      || nonce.length === 0
+      || nonce.length > 256
+      || typeof chrome.runtime?.connect !== "function") {
+      return;
+    }
+
+    let port;
+    try {
+      port = chrome.runtime.connect({ name: mediaDocumentIdentityPort });
+    } catch (error) {
+      return;
+    }
+
+    let closed = false;
+    let timeout = null;
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      if (timeout !== null && typeof clearTimeout === "function") {
+        clearTimeout(timeout);
+        timeout = null;
+      }
+      try {
+        port.disconnect?.();
+      } catch (error) {
+        // The background or browser may already have closed the one-shot port.
+      }
+    };
+
+    port.onMessage?.addListener(message => {
+      if (message?.type === mediaDocumentIdentityAck) {
+        close();
+      }
+    });
+    port.onDisconnect?.addListener(close);
+
+    try {
+      port.postMessage?.({ type: mediaDocumentIdentityMessage, nonce });
+    } catch (error) {
+      close();
+      return;
+    }
+    if (typeof setTimeout === "function") {
+      timeout = setTimeout(close, 1_000);
     }
   }
 
@@ -654,6 +787,12 @@
   if (!globalThis.firelinkSelectionLinkHandlerV2Installed) {
     globalThis.firelinkSelectionLinkHandlerV2Installed = true;
     chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+      if (request?.action === mediaSnapshotMessageAction) {
+        sendMediaDocumentIdentity(request?.nonce);
+        sendResponse(collectMediaSnapshot());
+        return false;
+      }
+
       const isLegacyAction = request?.action === "extractSelectionLinks";
       if (request?.action !== "extractSelectionLinksV2"
         && (legacySelectionLinkHandlerAlreadyInstalled || !isLegacyAction)) {
@@ -672,6 +811,48 @@
         liveCapture.hasSelection ? "live" : "none"
       ));
       return false;
+    });
+  }
+
+  if (chrome.runtime?.onConnect?.addListener) {
+    chrome.runtime.onConnect.addListener(port => {
+      if (port?.name !== mediaDiscoveryKeepalivePort) {
+        return;
+      }
+
+      let stopped = false;
+      let heartbeatTimer = null;
+      const stop = () => {
+        if (stopped) {
+          return;
+        }
+        stopped = true;
+        if (heartbeatTimer !== null && typeof clearInterval === "function") {
+          clearInterval(heartbeatTimer);
+          heartbeatTimer = null;
+        }
+      };
+      port.onDisconnect?.addListener(stop);
+
+      try {
+        port.postMessage?.({ type: "ready" });
+      } catch (error) {
+        stop();
+        return;
+      }
+
+      if (typeof setInterval === "function") {
+        heartbeatTimer = setInterval(() => {
+          if (stopped) {
+            return;
+          }
+          try {
+            port.postMessage?.({ type: "heartbeat" });
+          } catch (error) {
+            stop();
+          }
+        }, mediaDiscoveryKeepaliveIntervalMs);
+      }
     });
   }
 })();

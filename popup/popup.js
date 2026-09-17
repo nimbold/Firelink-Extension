@@ -209,6 +209,8 @@ document.addEventListener('DOMContentLoaded', () => {
       mediaStatus.textContent = currentHostname() || current.currentTab;
     } else if (state.media === 'openWebPage') {
       mediaStatus.textContent = current.openWebPage;
+    } else if (state.media === 'discovering') {
+      mediaStatus.textContent = current.discovering;
     } else if (state.media === 'sending') {
       mediaStatus.textContent = current.sending;
     } else if (state.media === 'couldNotSend') {
@@ -431,7 +433,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     fetchMediaBtn.disabled = true;
-    state.media = 'sending';
+    state.media = 'discovering';
     renderMediaStatus();
     void callBrowserApi(chrome.runtime, 'sendMessage', [{ action: 'fetchMediaForActiveTab' }]).then((result) => {
       const response = result.ok ? result.value : null;

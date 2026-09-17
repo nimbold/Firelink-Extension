@@ -24,7 +24,12 @@ function createBackgroundContext(signedFetch, options = {}) {
   const alarmsCreated = [];
   const contextMenuItems = [];
   const executedScripts = [];
+  const mediaDiscoveryPorts = [];
   const sentMessages = [];
+  const webRequestListeners = [];
+  const webRequestRegistrations = [];
+  const webRequestRegistrationHistory = [];
+  let webRequestAddAttempts = 0;
   const listeners = {};
   const observedDownloads = new Map();
   const deferredStorageCallbacks = [];
@@ -46,6 +51,46 @@ function createBackgroundContext(signedFetch, options = {}) {
     }
     return options.sendMessageError || null;
   };
+  const responseForMessage = (tabId, message) => {
+    if (message?.action === "collectMediaSnapshotV1") {
+      if (typeof options.mediaSnapshotResponse === "function") {
+        return options.mediaSnapshotResponse(tabId);
+      }
+      return options.mediaSnapshotByTab?.[tabId]
+        || options.mediaSnapshotResponse
+        || { urls: [] };
+    }
+    return selectionResponseForCall();
+  };
+  const connectMediaDocumentForMessage = (tabId, message, response) => {
+    if (message?.action !== "collectMediaSnapshotV1"
+      || typeof message.nonce !== "string") {
+      return;
+    }
+    const documentId = options.mediaDocumentIdByTab?.[tabId]
+      || response?.documentId;
+    if (typeof documentId !== "string" || documentId.length === 0) {
+      return;
+    }
+    const currentTab = options.tabsById?.[tabId]
+      || options.activeTabs?.find(tab => tab?.id === tabId)
+      || {};
+    const port = {
+      name: "firelink-media-document-v1",
+      sender: {
+        tab: { id: tabId, windowId: currentTab.windowId },
+        frameId: 0,
+        documentId
+      },
+      onMessage: {
+        addListener(listener) { port.onMessageListener = listener; }
+      },
+      postMessage() {},
+      disconnect() {}
+    };
+    listeners.runtimeConnect?.(port);
+    port.onMessageListener?.({ type: "document-identity", nonce: message.nonce });
+  };
   const chrome = {
     contextMenus: {
       onClicked: {
@@ -60,6 +105,27 @@ function createBackgroundContext(signedFetch, options = {}) {
         contextMenuItems.length = 0;
         if (options.promiseOnly) return Promise.resolve();
         callback?.();
+      }
+    },
+    webRequest: {
+      onBeforeSendHeaders: {
+        addListener(listener, filter, extraInfoSpec) {
+          if (options.webRequestAddThrows
+            || (options.webRequestAddThrowsOnce && webRequestAddAttempts++ === 0)) {
+            throw new Error(options.webRequestAddThrows);
+          }
+          webRequestListeners.push(listener);
+          const registration = { filter, extraInfoSpec };
+          webRequestRegistrations.push(registration);
+          webRequestRegistrationHistory.push(registration);
+        },
+        removeListener(listener) {
+          const index = webRequestListeners.indexOf(listener);
+          if (index >= 0) {
+            webRequestListeners.splice(index, 1);
+            webRequestRegistrations.splice(index, 1);
+          }
+        }
       }
     },
     cookies: {
@@ -194,6 +260,9 @@ function createBackgroundContext(signedFetch, options = {}) {
       },
       onMessage: {
         addListener(listener) { listeners.message = listener; }
+      },
+      onConnect: {
+        addListener(listener) { listeners.runtimeConnect = listener; }
       }
     },
     scripting: {
@@ -283,9 +352,38 @@ function createBackgroundContext(signedFetch, options = {}) {
       }
     },
     tabs: {
+      onUpdated: {
+        addListener(listener) { listeners.tabUpdated = listener; }
+      },
+      onActivated: {
+        addListener(listener) { listeners.tabActivated = listener; }
+      },
+      onRemoved: {
+        addListener(listener) { listeners.tabRemoved = listener; }
+      },
       query(_queryInfo, callback) {
         if (options.promiseOnly) return Promise.resolve(options.activeTabs || []);
         callback(options.activeTabs || []);
+      },
+      connect(tabId, details) {
+        const port = {
+          tabId,
+          name: details?.name,
+          disconnected: false,
+          disconnect() {
+            if (this.disconnected) return;
+            this.disconnected = true;
+            this.onDisconnectListener?.();
+          },
+          onDisconnect: {
+            addListener(listener) { port.onDisconnectListener = listener; }
+          },
+          onMessage: {
+            addListener(listener) { port.onMessageListener = listener; }
+          }
+        };
+        mediaDiscoveryPorts.push(port);
+        return port;
       },
       create(details, callback) {
         createdTabs.push(details);
@@ -333,19 +431,40 @@ function createBackgroundContext(signedFetch, options = {}) {
         sendMessageCallCount += 1;
         sentMessages.push({ tabId, message, options: sendOptions });
         const sendMessageError = sendMessageErrorForCall();
+        const response = responseForMessage(tabId, message);
+        connectMediaDocumentForMessage(tabId, message, response);
         if (options.promiseOnly) {
           return sendMessageError
             ? Promise.reject(new Error(sendMessageError))
-            : Promise.resolve(selectionResponseForCall());
+            : Promise.resolve(response);
         }
         chrome.runtime.lastError = sendMessageError
           ? { message: sendMessageError }
           : null;
-        responseCallback?.(selectionResponseForCall());
+        responseCallback?.(response);
         chrome.runtime.lastError = null;
       }
     }
   };
+  if (options.provideTabsGet) {
+    chrome.tabs.get = (tabId, callback) => {
+      const currentTab = options.tabsById?.[tabId]
+        || options.activeTabs?.find(tab => tab?.id === tabId)
+        || null;
+      if (options.promiseOnly) {
+        return currentTab
+          ? Promise.resolve(currentTab)
+          : Promise.reject(new Error("tab not found"));
+      }
+      if (!currentTab) {
+        chrome.runtime.lastError = { message: "tab not found" };
+        callback?.();
+        chrome.runtime.lastError = null;
+        return;
+      }
+      callback?.(currentTab);
+    };
+  }
   if (options.omitCookiesApi) {
     delete chrome.cookies;
   }
@@ -377,7 +496,11 @@ function createBackgroundContext(signedFetch, options = {}) {
     downloadActions,
     contextMenuItems,
     executedScripts,
+    mediaDiscoveryPorts,
     sentMessages,
+    webRequestListeners,
+    webRequestRegistrations,
+    webRequestRegistrationHistory,
     listeners,
     getPendingCaptures: () => persistedPendingCaptures
   };
@@ -3946,6 +4069,7 @@ test("popup media fetch sends the active page without a full cookie header", asy
     },
     {
       activeTabs: [{
+        id: 42,
         url: "https://youtube.com/watch?v=abc",
         cookieStoreId: "firefox-container-2"
       }],
@@ -3975,6 +4099,9 @@ test("popup media fetch sends the active page without a full cookie header", asy
   });
   assert.equal(requiredProtocolVersion, 4);
   assert.deepEqual(JSON.parse(JSON.stringify(fixture.cookieQueries)), []);
+  assert.equal(fixture.mediaDiscoveryPorts.length, 1);
+  assert.equal(fixture.mediaDiscoveryPorts[0].name, "firelink-media-discovery-v1");
+  assert.equal(fixture.mediaDiscoveryPorts[0].disconnected, true);
 });
 
 test("media context menu sends the tab page instead of transient media src", async () => {
@@ -4004,6 +4131,40 @@ test("media context menu sends the tab page instead of transient media src", asy
   assert.equal(requiredProtocolVersion, 4);
 });
 
+test("context-menu media discovery keeps the originating tab port open until handoff", async () => {
+  const clock = createFakeDiscoveryClock();
+  let payload = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, {
+    Date: clock.Date,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout
+  });
+
+  fixture.listeners.contextMenu(
+    {
+      menuItemId: "fetch-media-with-firelink",
+      srcUrl: "blob:https://example.com/player"
+    },
+    {
+      id: 14,
+      url: "https://example.com/watch"
+    }
+  );
+
+  assert.equal(fixture.mediaDiscoveryPorts.length, 1);
+  assert.equal(fixture.mediaDiscoveryPorts[0].name, "firelink-media-discovery-v1");
+  assert.equal(fixture.mediaDiscoveryPorts[0].disconnected, false);
+
+  await clock.advance(8000);
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(payload.urls[0], "https://example.com/watch");
+  assert.equal(fixture.mediaDiscoveryPorts[0].disconnected, true);
+});
+
 test("media context menu sends a clicked media page link with explicit media intent", async () => {
   let payload = null;
   let requiredProtocolVersion = null;
@@ -4020,6 +4181,7 @@ test("media context menu sends a clicked media page link with explicit media int
     },
     {
       url: "https://www.youtube.com/playlist?list=xyz",
+      id: 12,
       cookieStoreId: "firefox-default"
     }
   );
@@ -4027,7 +4189,7 @@ test("media context menu sends a clicked media page link with explicit media int
 
   assert.deepEqual(JSON.parse(JSON.stringify(payload)), {
     urls: ["https://www.youtube.com/watch?v=abc"],
-    referer: "https://www.youtube.com/watch?v=abc",
+    referer: "https://www.youtube.com/playlist?list=xyz",
     silent: false,
     media: true
   });
@@ -4069,6 +4231,821 @@ test("reports an ambiguous media handoff so the popup cannot blindly retry", asy
     accepted: false,
     ambiguous: true
   });
+});
+
+function createFakeDiscoveryClock() {
+  let now = 0;
+  const timers = [];
+  const setTimeout = (callback, delay) => {
+    const timer = { callback, due: now + delay, cleared: false };
+    timers.push(timer);
+    return timer;
+  };
+  const clearTimeout = timer => {
+    if (timer) {
+      timer.cleared = true;
+    }
+  };
+  const advance = async milliseconds => {
+    now += milliseconds;
+    for (const timer of timers.filter(item => !item.cleared && item.due <= now)) {
+      timer.cleared = true;
+      timer.callback();
+    }
+    await new Promise(resolve => setImmediate(resolve));
+  };
+  return {
+    Date: { now: () => now },
+    setTimeout,
+    clearTimeout,
+    advance,
+    now: value => { now = value; }
+  };
+}
+
+function emitMediaRequest(fixture, details) {
+  for (const listener of fixture.webRequestListeners) {
+    listener(details);
+  }
+}
+
+test("media discovery recognizes direct manifest URLs and rejects opaque or ordinary resources", () => {
+  const fixture = createBackgroundContext(async () => ({ ok: true }));
+  const result = vm.runInContext(`[
+    mediaManifestKind("https://cdn.example/master.M3U8?token=one#part"),
+    mediaManifestKind("https://cdn.example/live.MPD"),
+    mediaManifestKind("https://cdn.example/channel.ism"),
+    mediaManifestKind("https://cdn.example/channel.ism/manifest?token=two"),
+    mediaManifestKind("https://cdn.example/segment.ts"),
+    mediaManifestKind("blob:https://example.com/player"),
+    mediaManifestKind("data:application/vnd.apple.mpegurl,https://cdn.example/a.m3u8"),
+    mediaManifestKind("file:///tmp/local.m3u8"),
+    mediaManifestKind("https://user:secret@cdn.example/private.m3u8")
+  ]`, fixture.context);
+
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), [
+    "m3u8",
+    "mpd",
+    "ism",
+    "ism/manifest",
+    null,
+    null,
+    null,
+    null,
+    null
+  ]);
+  assert.equal(
+    vm.runInContext(
+      'normalizeMediaManifestURL("https://user:secret@cdn.example/private.m3u8")',
+      fixture.context
+    ),
+    null
+  );
+  assert.equal(
+    vm.runInContext(
+      'normalizeMediaManifestURL("https://cdn.example/private.m3u8?sig=short#player")',
+      fixture.context
+    ),
+    "https://cdn.example/private.m3u8?sig=short"
+  );
+});
+
+test("media discovery combines the content snapshot and requests using deterministic ranking", async () => {
+  const clock = createFakeDiscoveryClock();
+  let payload = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, {
+    Date: clock.Date,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+    mediaSnapshotByTab: {
+      7: { urls: ["https://cdn.example/snapshot.mpd"], documentId: "doc-7" }
+    }
+  });
+
+  const handoff = vm.runInContext(
+    'fetchMediaForTab({ id: 7, url: "https://example.com/watch" }, { notifyOnFailure: false })',
+    fixture.context
+  );
+  await new Promise(resolve => setImmediate(resolve));
+
+  clock.now(100);
+  emitMediaRequest(fixture, {
+    tabId: 7,
+    frameId: 4,
+    documentId: "child-7",
+    parentDocumentId: "doc-7",
+    url: "https://cdn.example/subframe.m3u8",
+    requestHeaders: []
+  });
+  emitMediaRequest(fixture, {
+    tabId: 7,
+    frameId: 0,
+    documentId: "doc-7",
+    url: "https://cdn.example/top.mpd",
+    requestHeaders: []
+  });
+  clock.now(200);
+  emitMediaRequest(fixture, {
+    tabId: 7,
+    frameId: 0,
+    documentId: "doc-7",
+    url: "https://cdn.example/older.m3u8",
+    requestHeaders: []
+  });
+  clock.now(300);
+  emitMediaRequest(fixture, {
+    tabId: 7,
+    frameId: 0,
+    documentId: "doc-7",
+    url: "https://cdn.example/latest.m3u8",
+    requestHeaders: []
+  });
+
+  await clock.advance(8000);
+  const result = await handoff;
+
+  assert.equal(result.accepted, true);
+  assert.equal(payload.urls[0], "https://cdn.example/latest.m3u8");
+  assert.equal(payload.referer, "https://example.com/watch");
+  assert.equal(payload.media, true);
+  assert.equal(fixture.sentMessages[0].message.action, "collectMediaSnapshotV1");
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.sentMessages[0].options)), { frameId: 0 });
+});
+
+test("media discovery falls back after eight seconds and cleans up late events", async () => {
+  const clock = createFakeDiscoveryClock();
+  let payload = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, {
+    Date: clock.Date,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout
+  });
+
+  const handoff = vm.runInContext(
+    'fetchMediaForTab({ id: 8, url: "https://example.com/watch" }, { notifyOnFailure: false })',
+    fixture.context
+  );
+  await clock.advance(8000);
+  const result = await handoff;
+
+  assert.equal(result.accepted, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(payload)), {
+    urls: ["https://example.com/watch"],
+    referer: "https://example.com/watch",
+    silent: false,
+    media: true
+  });
+  assert.equal(vm.runInContext("activeMediaDiscoverySessions.size", fixture.context), 0);
+
+  emitMediaRequest(fixture, {
+    tabId: 8,
+    frameId: 0,
+    url: "https://cdn.example/late.m3u8",
+    requestHeaders: []
+  });
+  assert.equal(payload.urls[0], "https://example.com/watch");
+});
+
+test("media discovery uses the page fallback when document identity is unavailable", async () => {
+  const clock = createFakeDiscoveryClock();
+  let payload = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, {
+    Date: clock.Date,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+    mediaSnapshotByTab: {
+      21: { urls: ["https://cdn.example/unbound.m3u8"] }
+    }
+  });
+
+  const handoff = vm.runInContext(
+    'fetchMediaForTab({ id: 21, url: "https://example.com/watch" }, { notifyOnFailure: false })',
+    fixture.context
+  );
+  emitMediaRequest(fixture, {
+    tabId: 21,
+    frameId: 0,
+    url: "https://cdn.example/unbound-request.m3u8",
+    requestHeaders: []
+  });
+
+  await clock.advance(8000);
+  const result = await handoff;
+
+  assert.equal(result.accepted, true);
+  assert.equal(payload.urls[0], "https://example.com/watch");
+});
+
+test("media discovery rejects a same-URL replacement document at handoff", async () => {
+  const clock = createFakeDiscoveryClock();
+  let snapshotCalls = 0;
+  let payload = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, {
+    Date: clock.Date,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+    mediaSnapshotResponse: () => ({
+      urls: [],
+      documentId: snapshotCalls++ === 0 ? "old-document" : "new-document"
+    })
+  });
+
+  const handoff = vm.runInContext(
+    'fetchMediaForTab({ id: 22, url: "https://example.com/watch" }, { notifyOnFailure: false })',
+    fixture.context
+  );
+  emitMediaRequest(fixture, {
+    tabId: 22,
+    frameId: 0,
+    documentId: "old-document",
+    url: "https://cdn.example/old-document.m3u8",
+    requestHeaders: []
+  });
+
+  await clock.advance(8000);
+  const result = await handoff;
+
+  assert.equal(result.accepted, false);
+  assert.equal(payload, null);
+});
+
+test("media discovery does not fetch or hand off encryption key and license URLs", async () => {
+  const clock = createFakeDiscoveryClock();
+  let payload = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, {
+    Date: clock.Date,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout
+  });
+
+  const handoff = vm.runInContext(
+    'fetchMediaForTab({ id: 19, url: "https://example.com/watch" }, { notifyOnFailure: false })',
+    fixture.context
+  );
+  emitMediaRequest(fixture, {
+    tabId: 19,
+    frameId: 0,
+    url: "https://cdn.example/license",
+    requestHeaders: [{ name: "Authorization", value: "Bearer secret" }]
+  });
+  emitMediaRequest(fixture, {
+    tabId: 19,
+    frameId: 0,
+    url: "https://cdn.example/content.key",
+    requestHeaders: [{ name: "Cookie", value: "session=secret" }]
+  });
+
+  await clock.advance(8000);
+  const result = await handoff;
+
+  assert.equal(result.accepted, true);
+  assert.equal(payload.urls[0], "https://example.com/watch");
+  assert.equal(payload.headers, undefined);
+  assert.equal(payload.media, true);
+});
+
+test("media discovery invalidates old-document candidates when the tab navigates", async () => {
+  const clock = createFakeDiscoveryClock();
+  let payload = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, {
+    Date: clock.Date,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout
+  });
+
+  const handoff = vm.runInContext(
+    'fetchMediaForTab({ id: 12, url: "https://example.com/old" }, { notifyOnFailure: false })',
+    fixture.context
+  );
+  emitMediaRequest(fixture, {
+    tabId: 12,
+    frameId: 0,
+    documentId: "old-document",
+    url: "https://cdn.example/old-document.m3u8",
+    requestHeaders: []
+  });
+
+  fixture.listeners.tabUpdated(12, {
+    status: "loading",
+    url: "https://example.com/new"
+  });
+  const result = await handoff;
+
+  assert.equal(result.accepted, false);
+  assert.equal(payload, null);
+  assert.equal(vm.runInContext("activeMediaDiscoverySessions.size", fixture.context), 0);
+  assert.equal(fixture.webRequestListeners.length, 0);
+
+  emitMediaRequest(fixture, {
+    tabId: 12,
+    frameId: 0,
+    documentId: "new-document",
+    url: "https://cdn.example/new-document.m3u8",
+    requestHeaders: []
+  });
+  assert.equal(payload, null);
+});
+
+test("media discovery rejects a new top-frame document before navigation events arrive", async () => {
+  const clock = createFakeDiscoveryClock();
+  let payload = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, {
+    Date: clock.Date,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout
+  });
+
+  const handoff = vm.runInContext(
+    'fetchMediaForTab({ id: 15, windowId: 3, url: "https://example.com/watch" }, { notifyOnFailure: false })',
+    fixture.context
+  );
+  emitMediaRequest(fixture, {
+    tabId: 15,
+    windowId: 3,
+    frameId: 0,
+    documentId: "old-document",
+    url: "https://cdn.example/old.m3u8",
+    requestHeaders: []
+  });
+  emitMediaRequest(fixture, {
+    tabId: 15,
+    windowId: 3,
+    frameId: 0,
+    documentId: "new-document",
+    url: "https://cdn.example/new.m3u8",
+    requestHeaders: []
+  });
+
+  const result = await handoff;
+
+  assert.equal(result.accepted, false);
+  assert.equal(payload, null);
+  assert.equal(vm.runInContext("activeMediaDiscoverySessions.size", fixture.context), 0);
+  assert.equal(fixture.webRequestListeners.length, 0);
+});
+
+test("media discovery does not reuse a pending session for a changed page URL", async () => {
+  const clock = createFakeDiscoveryClock();
+  const payloads = [];
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payloads.push(request.payload);
+    return { ok: true };
+  }, {
+    Date: clock.Date,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout
+  });
+
+  const first = vm.runInContext(
+    'fetchMediaForTab({ id: 22, windowId: 7, url: "https://example.com/old" }, { notifyOnFailure: false })',
+    fixture.context
+  );
+  const second = vm.runInContext(
+    'fetchMediaForTab({ id: 22, windowId: 7, url: "https://example.com/new" }, { notifyOnFailure: false })',
+    fixture.context
+  );
+
+  await clock.advance(8000);
+  const results = await Promise.all([first, second]);
+
+  assert.deepEqual(JSON.parse(JSON.stringify(results)), [
+    { accepted: false, ambiguous: false },
+    { accepted: true, ambiguous: false }
+  ]);
+  assert.deepEqual(payloads.map(payload => payload.urls[0]), ["https://example.com/new"]);
+});
+
+test("media discovery cancels when another tab is activated in the same window", async () => {
+  const clock = createFakeDiscoveryClock();
+  let payload = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, {
+    Date: clock.Date,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout
+  });
+
+  const handoff = vm.runInContext(
+    'fetchMediaForTab({ id: 17, windowId: 4, url: "https://example.com/watch" }, { notifyOnFailure: false })',
+    fixture.context
+  );
+  fixture.listeners.tabActivated({ tabId: 18, windowId: 4 });
+
+  const result = await handoff;
+
+  assert.equal(result.accepted, false);
+  assert.equal(payload, null);
+  assert.equal(fixture.webRequestListeners.length, 0);
+});
+
+test("media discovery cancels when focus moves to another window", async () => {
+  const clock = createFakeDiscoveryClock();
+  let payload = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, {
+    Date: clock.Date,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout
+  });
+
+  const handoff = vm.runInContext(
+    'fetchMediaForTab({ id: 19, windowId: 4, url: "https://example.com/watch" }, { notifyOnFailure: false })',
+    fixture.context
+  );
+  fixture.listeners.tabActivated({ tabId: 20, windowId: 5 });
+
+  const result = await handoff;
+
+  assert.equal(result.accepted, false);
+  assert.equal(payload, null);
+  assert.equal(fixture.webRequestListeners.length, 0);
+});
+
+test("media handoff revalidates the initiating tab URL after discovery", async () => {
+  const clock = createFakeDiscoveryClock();
+  let payload = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, {
+    Date: clock.Date,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+    provideTabsGet: true,
+    tabsById: {
+      16: {
+        id: 16,
+        windowId: 5,
+        url: "https://example.com/new"
+      }
+    }
+  });
+
+  const handoff = vm.runInContext(
+    'fetchMediaForTab({ id: 16, windowId: 5, url: "https://example.com/old" }, { notifyOnFailure: false })',
+    fixture.context
+  );
+  await clock.advance(8000);
+  const result = await handoff;
+
+  assert.equal(result.accepted, false);
+  assert.equal(payload, null);
+});
+
+test("media handoff rejects a tab that is no longer active", async () => {
+  const clock = createFakeDiscoveryClock();
+  let payload = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, {
+    Date: clock.Date,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+    provideTabsGet: true,
+    tabsById: {
+      23: {
+        id: 23,
+        windowId: 6,
+        url: "https://example.com/watch",
+        active: false
+      }
+    }
+  });
+
+  const handoff = vm.runInContext(
+    'fetchMediaForTab({ id: 23, windowId: 6, url: "https://example.com/watch" }, { notifyOnFailure: false })',
+    fixture.context
+  );
+  await clock.advance(8000);
+  const result = await handoff;
+
+  assert.equal(result.accepted, false);
+  assert.equal(payload, null);
+});
+
+test("concurrent media actions for one tab share one complete handoff", async () => {
+  const clock = createFakeDiscoveryClock();
+  let handoffCount = 0;
+  const fixture = createBackgroundContext(async () => {
+    handoffCount += 1;
+    return { ok: true };
+  }, {
+    Date: clock.Date,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout
+  });
+
+  const first = vm.runInContext(
+    'fetchMediaForTab({ id: 13, url: "https://example.com/watch" }, { notifyOnFailure: false })',
+    fixture.context
+  );
+  const second = vm.runInContext(
+    'fetchMediaForTab({ id: 13, url: "https://example.com/watch" }, { notifyOnFailure: false })',
+    fixture.context
+  );
+
+  await clock.advance(8000);
+  const results = await Promise.all([first, second]);
+
+  assert.equal(handoffCount, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(results)), [
+    { accepted: true, ambiguous: false },
+    { accepted: true, ambiguous: false }
+  ]);
+  assert.equal(vm.runInContext("activeMediaFetchHandoffs.size", fixture.context), 0);
+});
+
+test("media discovery ignores requests from other tabs and bounds candidates", async () => {
+  const clock = createFakeDiscoveryClock();
+  let payload = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, {
+    Date: clock.Date,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+    mediaSnapshotByTab: {
+      9: { urls: [], documentId: "doc-9" }
+    }
+  });
+
+  const handoff = vm.runInContext(
+    'fetchMediaForTab({ id: 9, url: "https://example.com/watch" }, { notifyOnFailure: false })',
+    fixture.context
+  );
+  for (let index = 0; index < 100; index += 1) {
+    clock.now(index + 1);
+    emitMediaRequest(fixture, {
+      tabId: index === 0 ? 99 : 9,
+      frameId: 0,
+      documentId: index === 0 ? "other-doc" : "doc-9",
+      url: `https://cdn.example/segment-${index}.mpd`,
+      requestHeaders: []
+    });
+  }
+
+  assert.equal(
+    vm.runInContext("activeMediaDiscoverySessions.get(9).candidates.size", fixture.context),
+    64
+  );
+  await clock.advance(8000);
+  await handoff;
+
+  assert.match(payload.urls[0], /segment-99\.mpd$/);
+});
+
+test("media discovery bounds accepted frame identities", async () => {
+  const clock = createFakeDiscoveryClock();
+  let payload = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, {
+    Date: clock.Date,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+    mediaSnapshotByTab: {
+      13: { urls: [], documentId: "top-document" }
+    }
+  });
+
+  const handoff = vm.runInContext(
+    'fetchMediaForTab({ id: 13, url: "https://example.com/watch" }, { notifyOnFailure: false })',
+    fixture.context
+  );
+  for (let index = 0; index < 100; index += 1) {
+    emitMediaRequest(fixture, {
+      tabId: 13,
+      frameId: index + 1,
+      documentId: `child-${index}`,
+      parentDocumentId: "top-document",
+      url: `https://cdn.example/frame-${index}.mpd`,
+      requestHeaders: []
+    });
+  }
+
+  assert.equal(
+    vm.runInContext("activeMediaDiscoverySessions.get(13).documentIds.size", fixture.context),
+    64
+  );
+  await clock.advance(8000);
+  await handoff;
+  assert.equal(payload.media, true);
+});
+
+test("media discovery keeps the winning frame context attached to a duplicate URL", async () => {
+  const clock = createFakeDiscoveryClock();
+  let payload = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, {
+    Date: clock.Date,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+    mediaSnapshotByTab: {
+      14: { urls: [], documentId: "top-document" }
+    }
+  });
+
+  const handoff = vm.runInContext(
+    'fetchMediaForTab({ id: 14, url: "https://example.com/watch" }, { notifyOnFailure: false })',
+    fixture.context
+  );
+  emitMediaRequest(fixture, {
+    tabId: 14,
+    frameId: 0,
+    documentId: "top-document",
+    url: "https://cdn.example/shared.m3u8",
+    requestHeaders: [{ name: "Origin", value: "https://top.example" }]
+  });
+  clock.now(500);
+  emitMediaRequest(fixture, {
+    tabId: 14,
+    frameId: 2,
+    documentId: "child-document",
+    parentDocumentId: "top-document",
+    url: "https://cdn.example/shared.m3u8",
+    requestHeaders: [{ name: "Origin", value: "https://child.example" }]
+  });
+
+  await clock.advance(8000);
+  await handoff;
+  assert.equal(payload.headers, "Origin: https://top.example");
+});
+
+test("media discovery forwards only safe bounded headers and uses a validated referer", async () => {
+  const clock = createFakeDiscoveryClock();
+  let payload = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, {
+    Date: clock.Date,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+    mediaSnapshotByTab: {
+      10: { urls: [], documentId: "doc-10" }
+    }
+  });
+
+  const handoff = vm.runInContext(
+    'fetchMediaForTab({ id: 10, url: "https://example.com/watch" }, { notifyOnFailure: false })',
+    fixture.context
+  );
+  emitMediaRequest(fixture, {
+    tabId: 10,
+    frameId: 0,
+    documentId: "doc-10",
+    url: "https://cdn.example/master.m3u8",
+    requestHeaders: [
+      { name: "Cookie", value: "session=secret" },
+      { name: "Cookie2", value: "session=secret" },
+      { name: "Authorization", value: "Bearer secret" },
+      { name: "Proxy-Authorization", value: "Bearer secret" },
+      { name: "Set-Cookie", value: "session=secret" },
+      { name: "Referer", value: "https://example.com/player?token=secret#fragment" },
+      { name: "Accept", value: "application/vnd.apple.mpegurl" },
+      { name: "Origin", value: "https://example.com" },
+      { name: "User-Agent", value: "Browser Test" },
+      { name: "X-Playback-Token", value: "secret" },
+      { name: "Range", value: "bytes=0-" },
+      { name: "Host", value: "cdn.example" },
+      { name: "Connection", value: "keep-alive" },
+      { name: "Accept-Language", value: "en-US" },
+      { name: "X-Too-Many", value: "discarded" }
+    ]
+  });
+
+  await clock.advance(8000);
+  await handoff;
+
+  assert.equal(payload.referer, "https://example.com/player?token=secret");
+  assert.equal(payload.headers, [
+    "Accept: application/vnd.apple.mpegurl",
+    "Accept-Language: en-US",
+    "Origin: https://example.com",
+    "User-Agent: Browser Test"
+  ].join("\n"));
+  assert.doesNotMatch(payload.headers, /Cookie|Authorization|Playback-Token|Range|Host|secret/i);
+  assert.equal(fixture.webRequestRegistrationHistory[0].filter.urls.join(","), "http://*/*,https://*/*");
+  assert.equal(fixture.webRequestRegistrationHistory[0].filter.tabId, 10);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(fixture.webRequestRegistrationHistory[0].extraInfoSpec)),
+    ["requestHeaders", "extraHeaders"]
+  );
+  assert.equal(fixture.webRequestRegistrations.length, 0);
+});
+
+test("media handoffs never resolve or send browser cookies", async () => {
+  let payload = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, {
+    cookiesByUrl: {
+      "https://cdn.example/master.m3u8": [
+        { name: "session", value: "secret", domain: "cdn.example", path: "/" }
+      ]
+    }
+  });
+
+  const accepted = await vm.runInContext(
+    'sendToFirelink(["https://cdn.example/master.m3u8"], "https://example.com/watch", { media: true, forwardCookies: true, cookieStoreId: "firefox-default", notifyOnFailure: false })',
+    fixture.context
+  );
+
+  assert.equal(accepted, true);
+  assert.equal(payload.cookies, undefined);
+  assert.equal(payload.cookie_scopes, undefined);
+  assert.deepEqual(fixture.cookieQueries, []);
+});
+
+test("media discovery falls back to the portable request-header observer", async () => {
+  const clock = createFakeDiscoveryClock();
+  let payload = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, {
+    Date: clock.Date,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+    webRequestAddThrowsOnce: true
+  });
+
+  const handoff = vm.runInContext(
+    'fetchMediaForTab({ id: 20, url: "https://example.com/watch" }, { notifyOnFailure: false })',
+    fixture.context
+  );
+  await clock.advance(8000);
+  await handoff;
+
+  assert.equal(payload.urls[0], "https://example.com/watch");
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(fixture.webRequestRegistrationHistory[0].extraInfoSpec)),
+    ["requestHeaders"]
+  );
+});
+
+test("media discovery falls back to the canonical page for an invalid observed referer", async () => {
+  const clock = createFakeDiscoveryClock();
+  let payload = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, {
+    Date: clock.Date,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+    mediaSnapshotByTab: {
+      11: { urls: [], documentId: "doc-11" }
+    }
+  });
+
+  const handoff = vm.runInContext(
+    'fetchMediaForTab({ id: 11, url: "https://example.com/watch" }, { notifyOnFailure: false })',
+    fixture.context
+  );
+  emitMediaRequest(fixture, {
+    tabId: 11,
+    frameId: 0,
+    documentId: "doc-11",
+    url: "https://cdn.example/master.m3u8",
+    requestHeaders: [{ name: "Referer", value: "javascript:alert(1)" }]
+  });
+
+  await clock.advance(8000);
+  await handoff;
+
+  assert.equal(payload.referer, "https://example.com/watch");
 });
 
 test("persists a filename update after a worker restart without an in-memory waiter", async () => {

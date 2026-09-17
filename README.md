@@ -58,7 +58,9 @@ After installation:
 - Paused Torrent captures that wait for Firelink confirmation before the browser download continues.
 - Batch selected links from page context menus.
 - Optional Firelink folders named from page titles.
-- Explicit **Fetch media** actions from the popup and context menu.
+- Explicit **Fetch media** actions from the popup and context menu. During the
+  action, Companion briefly observes requests from the active tab to find one
+  HLS, DASH, or Smooth Streaming manifest when the page exposes one.
 - Localized popup UI in Firelink's six supported languages, including RTL layout for Hebrew and Persian.
 - Localized browser context menus that follow the selected language.
 - System, light, dark, Dracula, and Nord popup themes.
@@ -71,25 +73,61 @@ After installation:
 - Safer popup state and automatic-capture handling when settings change during a handoff.
 - Dynamic local port discovery across `127.0.0.1:6412-6422`.
 
-The extension deliberately keeps media fetching in the popup and context menu instead of injecting an in-page player button. Browser sites frequently change their DOM and player behavior, and media can be exposed through site-specific, single-page, MSE, or blob-based paths that require ongoing maintenance.
+The extension deliberately keeps media fetching in the popup and context menu instead of injecting an in-page player button. A user-triggered Fetch
+media action takes a bounded, eight-second snapshot of the active tab's media
+resource URLs and newly observed HTTP(S) requests. It selects at most one
+`.m3u8`, `.mpd`, `.ism`, or `.ism/manifest` URL, then falls back to the page
+URL when no manifest is visible. It does not reload the page, fetch manifest
+bodies or key files, or observe requests continuously. Browser sites
+frequently change their DOM and player behavior, and media can be exposed
+through site-specific, single-page, MSE, or blob-based paths that require
+ongoing maintenance.
+
+On browsers that do not expose a request/document identity to extensions,
+manifest discovery is deliberately disabled for that session and the action
+falls back to the canonical page URL. Direct manifest URLs still work through
+the desktop Add window.
 
 ## Handoff and privacy
 
 - Ordinary captures may use browser cookies when the browser session requires them.
-- Explicit media requests send the canonical page URL, not a raw browser `Cookie` header.
+- Explicit media requests send one discovered manifest when available, or the
+  canonical page URL otherwise. They never send a raw browser `Cookie` header.
+- Discovery may include only `Accept`, `Accept-Language`, `Origin`, and
+  `User-Agent`, plus a validated `Referer` field. Credentials, custom token
+  headers, cookies, ranges, host headers, and hop-by-hop headers are removed.
 - Firelink handles media authentication through its configured media cookie source.
+- The bundled yt-dlp path can handle clear or non-DRM encrypted HLS such as
+  AES-128 when the manifest and key are legitimately accessible. DRM/CDM,
+  license-server, and other key workflows are unsupported; Firelink does not
+  bypass them.
 - The original browser download is kept unless Firelink confirms the handoff.
 - Torrent downloads remain paused until Firelink confirms receipt; ambiguous handoffs stay paused to avoid duplicate delivery.
 - Requests stay on the local machine. The extension does not send download data to a remote service.
+
+Newer Companion and Firelink builds additionally bind signed handoffs to the
+current desktop-server session. Older paired desktop builds continue through
+the established HMAC compatibility path until both sides are upgraded.
 
 ### Browser permissions
 
 The extension requests access to all web pages because automatic capture runs
 at document start and browser cookies may be needed for authenticated ordinary
 downloads. It also uses the browser downloads, context-menu, storage, alarm,
-script-injection, notification, and cookie APIs listed in `manifest.json`.
+script-injection, notification, cookie, and non-blocking `webRequest` APIs
+listed in `manifest.json`. The webRequest listener records nothing unless you
+invoke Fetch media, and then only for the active tab for at most eight seconds.
 Those permissions support the features above; the extension sends handoff data
 only to the paired Firelink app on localhost.
+
+### Media capability boundary
+
+Firelink's existing bundled yt-dlp, FFmpeg, and Deno engines remain the only
+media backend. Clear media and non-DRM encrypted HLS (for example, AES-128)
+may work when yt-dlp can legitimately access the manifest and key. DRM/CDM,
+license-server, and other protected-key workflows are intentionally unsupported
+and are not bypassed. This phase does not add subtitle or multiple-audio-track
+selection UI.
 
 For the Edge store listing, see the [privacy policy](PRIVACY.md) and the [submission kit](store/edge/listing.md).
 

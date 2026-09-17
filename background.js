@@ -32,6 +32,28 @@ const TORRENT_MIME_TYPES = new Set([
 ]);
 const MAX_HANDOFF_URLS = 200;
 const SELECTION_LINK_MESSAGE_ACTION = "extractSelectionLinksV2";
+const MEDIA_SNAPSHOT_MESSAGE_ACTION = "collectMediaSnapshotV1";
+const MEDIA_DOCUMENT_IDENTITY_PORT = "firelink-media-document-v1";
+const MEDIA_DOCUMENT_IDENTITY_MESSAGE = "document-identity";
+const MEDIA_DOCUMENT_IDENTITY_ACK = "document-identity-ack";
+const MEDIA_DISCOVERY_KEEPALIVE_PORT = "firelink-media-discovery-v1";
+const MEDIA_DISCOVERY_SESSION_MS = 8000;
+const MEDIA_DISCOVERY_MAX_CANDIDATES = 64;
+const MEDIA_DISCOVERY_MAX_DOCUMENTS = 64;
+const MEDIA_DISCOVERY_MAX_HEADERS = 4;
+const MEDIA_DISCOVERY_MAX_HEADER_VALUE_LENGTH = 2048;
+const MEDIA_DISCOVERY_MANIFEST_KIND_RANK = Object.freeze({
+  m3u8: 0,
+  mpd: 1,
+  "ism/manifest": 2,
+  ism: 3
+});
+const MEDIA_DISCOVERY_SAFE_HEADER_NAMES = Object.freeze({
+  accept: "Accept",
+  "accept-language": "Accept-Language",
+  origin: "Origin",
+  "user-agent": "User-Agent"
+});
 const PENDING_CAPTURE_STORAGE_KEY = "pendingAutomaticCaptures";
 const PENDING_CAPTURE_RECOVERY_ALARM = "firelink-pending-capture-recovery";
 const PENDING_CAPTURE_RECOVERY_DELAY_MS = 30_000;
@@ -41,6 +63,12 @@ const pendingDownloadFilenameWaits = new Map();
 let pendingCaptureMutation = Promise.resolve();
 let pendingCaptureRecovery = null;
 const activeAutomaticCaptures = new Map();
+const activeMediaDiscoverySessions = new Map();
+const activeMediaFetchHandoffs = new Map();
+const mediaDiscoveryObserverRegistrations = new Map();
+const pendingMediaDocumentIdentityRequests = new Map();
+let mediaDiscoverySequence = 0;
+let mediaDiscoveryNonceSequence = 0;
 const SETTINGS_KEYS = [
   "globalCapture",
   "siteToggles",
@@ -340,10 +368,689 @@ function normalizePageMediaURL(rawURL) {
 
   try {
     const url = new URL(rawURL.trim());
-    return PAGE_MEDIA_SCHEMES.has(url.protocol) ? url.href : null;
+    if (!PAGE_MEDIA_SCHEMES.has(url.protocol) || url.username || url.password) {
+      return null;
+    }
+    // Fragments are local to the document and are not sent with HTTP
+    // requests. Do not carry them into a media handoff or referer context.
+    url.hash = "";
+    return url.href;
   } catch (error) {
     return null;
   }
+}
+
+function mediaManifestKind(rawURL) {
+  const normalizedURL = normalizePageMediaURL(rawURL);
+  if (!normalizedURL) {
+    return null;
+  }
+
+  try {
+    const url = new URL(normalizedURL);
+    if (url.username || url.password) {
+      return null;
+    }
+    const pathname = url.pathname.toLowerCase();
+    if (pathname.endsWith(".m3u8")) return "m3u8";
+    if (pathname.endsWith(".mpd")) return "mpd";
+    if (pathname.endsWith(".ism/manifest")) return "ism/manifest";
+    if (pathname.endsWith(".ism")) return "ism";
+    return null;
+  } catch (error) {
+    return null;
+  }
+}
+
+function normalizeMediaManifestURL(rawURL) {
+  const normalizedURL = normalizePageMediaURL(rawURL);
+  if (!normalizedURL || !mediaManifestKind(normalizedURL)) {
+    return null;
+  }
+
+  try {
+    const url = new URL(normalizedURL);
+    return url.href;
+  } catch (error) {
+    return null;
+  }
+}
+
+function rawMediaHeaderEntries(rawHeaders) {
+  if (Array.isArray(rawHeaders)) {
+    return rawHeaders;
+  }
+  if (!rawHeaders || typeof rawHeaders !== "object") {
+    return [];
+  }
+  return Object.entries(rawHeaders).map(([name, value]) => ({ name, value }));
+}
+
+function validMediaHeaderValue(value) {
+  return typeof value === "string"
+    && value.length <= MEDIA_DISCOVERY_MAX_HEADER_VALUE_LENGTH
+    && !/[\u0000-\u001f\u007f]/.test(value);
+}
+
+function normalizeSafeMediaHeaders(rawHeaders) {
+  const normalized = new Map();
+  for (const header of rawMediaHeaderEntries(rawHeaders)) {
+    const rawName = typeof header?.name === "string" ? header.name.trim().toLowerCase() : "";
+    const canonicalName = Object.prototype.hasOwnProperty.call(
+      MEDIA_DISCOVERY_SAFE_HEADER_NAMES,
+      rawName
+    )
+      ? MEDIA_DISCOVERY_SAFE_HEADER_NAMES[rawName]
+      : undefined;
+    if (!canonicalName || normalized.has(canonicalName)) {
+      continue;
+    }
+    if (!validMediaHeaderValue(header.value)) {
+      continue;
+    }
+    const value = header.value.trim();
+    if (!value) {
+      continue;
+    }
+    normalized.set(canonicalName, value);
+    if (normalized.size >= MEDIA_DISCOVERY_MAX_HEADERS) {
+      break;
+    }
+  }
+
+  return Object.values(MEDIA_DISCOVERY_SAFE_HEADER_NAMES)
+    .filter(name => normalized.has(name))
+    .map(name => ({ name, value: normalized.get(name) }));
+}
+
+function mediaHeadersPayload(rawHeaders) {
+  const headers = normalizeSafeMediaHeaders(rawHeaders);
+  return headers.length > 0
+    ? headers.map(({ name, value }) => `${name}: ${value}`).join("\n")
+    : undefined;
+}
+
+function normalizeObservedMediaReferer(rawReferer, fallback = "") {
+  const normalize = value => {
+    const normalizedURL = normalizePageMediaURL(value);
+    if (!normalizedURL) {
+      return null;
+    }
+    try {
+      const url = new URL(normalizedURL);
+      if (url.username || url.password) {
+        return null;
+      }
+      // Fragments are local to the document, but a page query can be part of
+      // the media server's signed/session referer contract. Keep the validated
+      // query in the dedicated referer field; it is never copied to headers.
+      url.hash = "";
+      return url.href;
+    } catch (error) {
+      return null;
+    }
+  };
+
+  return normalize(rawReferer) || normalize(fallback) || "";
+}
+
+function rawMediaHeaderValue(rawHeaders, wantedName) {
+  const normalizedName = wantedName.toLowerCase();
+  for (const header of rawMediaHeaderEntries(rawHeaders)) {
+    if (typeof header?.name !== "string"
+      || header.name.trim().toLowerCase() !== normalizedName
+      || !validMediaHeaderValue(header.value)) {
+      continue;
+    }
+    return header.value.trim();
+  }
+  return "";
+}
+
+function mediaDiscoveryFrameId(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function mediaDiscoveryTabId(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function mediaDiscoveryWindowId(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function mediaDiscoveryDocumentId(value) {
+  return typeof value === "string" && value.length > 0 && value.length <= 256
+    ? value
+    : null;
+}
+
+function mediaDiscoveryNonce(value) {
+  return typeof value === "string" && value.length > 0 && value.length <= 256
+    ? value
+    : null;
+}
+
+function nextMediaDiscoveryNonce() {
+  mediaDiscoveryNonceSequence += 1;
+  return `${Date.now().toString(36)}-${mediaDiscoveryNonceSequence.toString(36)}`;
+}
+
+function bindMediaDiscoveryDocument(session, documentId, frameId, windowId) {
+  if (!session || session.closed || !documentId || frameId !== 0) {
+    return false;
+  }
+  if (session.windowId !== null && windowId !== null && session.windowId !== windowId) {
+    return false;
+  }
+  if (session.documentId && session.documentId !== documentId) {
+    cancelMediaDiscoverySession(session);
+    return false;
+  }
+
+  session.documentId = documentId;
+  session.documentIds.add(documentId);
+  session.contentDocumentBound = true;
+  const pendingSnapshotURLs = session.pendingSnapshotURLs.splice(0);
+  for (const url of pendingSnapshotURLs) {
+    mergeMediaDiscoveryCandidate(session, createMediaDiscoveryCandidate(url, {
+      frameId: 0,
+      fallbackReferer: session.fallbackReferer,
+      observedAt: session.startedAt
+    }));
+  }
+  return true;
+}
+
+function settleMediaDocumentIdentityRequest(nonce, documentId) {
+  const pending = pendingMediaDocumentIdentityRequests.get(nonce);
+  if (!pending) {
+    return false;
+  }
+  pendingMediaDocumentIdentityRequests.delete(nonce);
+  if (pending.timer !== null) {
+    clearTimeout(pending.timer);
+    pending.timer = null;
+  }
+  pending.resolve(documentId);
+  return true;
+}
+
+function handleMediaDocumentIdentityPort(port) {
+  if (port?.name !== MEDIA_DOCUMENT_IDENTITY_PORT) {
+    return;
+  }
+
+  const sender = port.sender;
+  const tabId = mediaDiscoveryTabId(sender?.tab?.id);
+  const frameId = mediaDiscoveryFrameId(sender?.frameId);
+  const windowId = mediaDiscoveryWindowId(sender?.tab?.windowId);
+  const documentId = mediaDiscoveryDocumentId(sender?.documentId);
+  const onMessage = message => {
+    const nonce = mediaDiscoveryNonce(message?.nonce);
+    if (message?.type !== MEDIA_DOCUMENT_IDENTITY_MESSAGE || !nonce) {
+      return;
+    }
+
+    const session = tabId === null ? null : activeMediaDiscoverySessions.get(tabId);
+    if (session?.identityNonce === nonce) {
+      bindMediaDiscoveryDocument(session, documentId, frameId, windowId);
+    }
+
+    const pending = pendingMediaDocumentIdentityRequests.get(nonce);
+    if (pending && pending.tabId === tabId && frameId === 0 && windowIdMatches(pending.windowId, windowId)) {
+      settleMediaDocumentIdentityRequest(nonce, documentId && frameId === 0 ? documentId : null);
+    }
+
+    try {
+      port.postMessage?.({ type: MEDIA_DOCUMENT_IDENTITY_ACK });
+    } catch (error) {
+      // The content side may have gone away after sending its identity.
+    }
+    try {
+      port.disconnect?.();
+    } catch (error) {
+      // The browser may already have closed the one-shot identity port.
+    }
+  };
+
+  port.onMessage?.addListener(onMessage);
+}
+
+function windowIdMatches(expected, actual) {
+  return expected === null || actual === null || expected === actual;
+}
+
+if (chrome.runtime?.onConnect?.addListener) {
+  chrome.runtime.onConnect.addListener(handleMediaDocumentIdentityPort);
+}
+
+function createMediaDiscoveryCandidate(rawURL, options = {}) {
+  const url = normalizeMediaManifestURL(rawURL);
+  if (!url) {
+    return null;
+  }
+
+  const frameId = mediaDiscoveryFrameId(options.frameId);
+  const observedAt = Number.isFinite(options.observedAt) ? options.observedAt : Date.now();
+  const fallbackReferer = normalizeObservedMediaReferer(options.fallbackReferer);
+  const observedReferer = normalizeObservedMediaReferer(options.referer);
+  return {
+    url,
+    kind: mediaManifestKind(url),
+    topFrame: frameId === 0,
+    observedAt,
+    sequence: ++mediaDiscoverySequence,
+    headers: normalizeSafeMediaHeaders(options.headers),
+    referer: observedReferer || fallbackReferer,
+    hasObservedReferer: Boolean(observedReferer)
+  };
+}
+
+function compareMediaDiscoveryCandidates(left, right) {
+  const leftFrameRank = left.topFrame ? 0 : 1;
+  const rightFrameRank = right.topFrame ? 0 : 1;
+  if (leftFrameRank !== rightFrameRank) {
+    return leftFrameRank - rightFrameRank;
+  }
+
+  const leftKindRank = MEDIA_DISCOVERY_MANIFEST_KIND_RANK[left.kind] ?? Number.MAX_SAFE_INTEGER;
+  const rightKindRank = MEDIA_DISCOVERY_MANIFEST_KIND_RANK[right.kind] ?? Number.MAX_SAFE_INTEGER;
+  if (leftKindRank !== rightKindRank) {
+    return leftKindRank - rightKindRank;
+  }
+
+  if (left.observedAt !== right.observedAt) {
+    return right.observedAt - left.observedAt;
+  }
+  return right.sequence - left.sequence;
+}
+
+function mergeMediaDiscoveryCandidate(session, candidate) {
+  if (!session || session.closed || !candidate) {
+    return;
+  }
+
+  const previous = session.candidates.get(candidate.url);
+  const merged = previous
+    ? (() => {
+      // Keep request context attached to the observation that wins the frame
+      // ranking. A URL can be requested by both a player iframe and the top
+      // document; OR-ing topFrame while copying the latest child headers can
+      // otherwise mix identities.
+      const candidateContextWins = candidate.topFrame !== previous.topFrame
+        ? candidate.topFrame
+        : candidate.observedAt > previous.observedAt
+          || (candidate.observedAt === previous.observedAt && candidate.sequence > previous.sequence);
+      return {
+        ...previous,
+        ...candidate,
+        topFrame: previous.topFrame || candidate.topFrame,
+        observedAt: Math.max(previous.observedAt, candidate.observedAt),
+        headers: candidateContextWins ? candidate.headers : previous.headers,
+        referer: candidateContextWins ? candidate.referer : previous.referer,
+        hasObservedReferer: candidateContextWins
+          ? candidate.hasObservedReferer
+          : previous.hasObservedReferer
+      };
+    })()
+    : candidate;
+  session.candidates.set(candidate.url, merged);
+
+  if (session.candidates.size <= MEDIA_DISCOVERY_MAX_CANDIDATES) {
+    return;
+  }
+
+  const worst = Array.from(session.candidates.values())
+    .sort(compareMediaDiscoveryCandidates)
+    .at(-1);
+  if (worst) {
+    session.candidates.delete(worst.url);
+  }
+}
+
+function finishMediaDiscoverySession(session) {
+  if (!session || session.closed) {
+    return;
+  }
+  session.closed = true;
+  if (session.timer !== null) {
+    clearTimeout(session.timer);
+    session.timer = null;
+  }
+  if (activeMediaDiscoverySessions.get(session.tabId) === session) {
+    activeMediaDiscoverySessions.delete(session.tabId);
+  }
+  uninstallMediaDiscoveryObserver(session.tabId);
+
+  const candidate = Array.from(session.candidates.values())
+    .sort(compareMediaDiscoveryCandidates)[0];
+  session.resolve(candidate
+    ? {
+      url: candidate.url,
+      referer: candidate.referer || session.fallbackReferer,
+      headers: [...candidate.headers],
+      documentId: session.documentId,
+      invalidated: session.invalidated === true
+    }
+    : {
+      url: session.fallbackURL,
+      referer: session.fallbackReferer || session.fallbackURL,
+      headers: [],
+      documentId: session.documentId,
+      invalidated: session.invalidated === true
+    });
+}
+
+function cancelMediaDiscoverySession(session) {
+  if (!session || session.closed) {
+    return;
+  }
+  // A navigation invalidates every request observed for the old document. Do
+  // not let a pre-navigation candidate cross the page/referrer boundary.
+  session.invalidated = true;
+  session.candidates.clear();
+  session.pendingSnapshotURLs.length = 0;
+  finishMediaDiscoverySession(session);
+}
+
+function cancelMediaDiscoveryForTab(tabId) {
+  const normalizedTabId = mediaDiscoveryTabId(tabId);
+  if (normalizedTabId === null) {
+    return;
+  }
+  cancelMediaDiscoverySession(activeMediaDiscoverySessions.get(normalizedTabId));
+}
+
+function observeMediaRequest(details) {
+  const tabId = mediaDiscoveryTabId(details?.tabId);
+  if (tabId === null) {
+    return;
+  }
+  const session = activeMediaDiscoverySessions.get(tabId);
+  if (!session || session.closed) {
+    return;
+  }
+  const requestWindowId = mediaDiscoveryWindowId(details?.windowId);
+  if (session.windowId !== null
+    && requestWindowId !== null
+    && session.windowId !== requestWindowId) {
+    return;
+  }
+  if (Date.now() >= session.expiresAt) {
+    finishMediaDiscoverySession(session);
+    return;
+  }
+
+  const frameId = mediaDiscoveryFrameId(details?.frameId);
+  const documentId = mediaDiscoveryDocumentId(details?.documentId);
+  if (!documentId) {
+    // Without a document identity, a request from a same-URL replacement
+    // document cannot be distinguished from the initiating page.
+    return;
+  }
+  if (frameId === 0) {
+    if (session.documentId && session.documentId !== documentId) {
+      cancelMediaDiscoverySession(session);
+      return;
+    }
+    session.documentId ||= documentId;
+    session.documentIds.add(documentId);
+  } else {
+    if (frameId === null || !session.documentId || !session.documentIds.has(session.documentId)) {
+      return;
+    }
+    const parentDocumentId = mediaDiscoveryDocumentId(details?.parentDocumentId);
+    if (!parentDocumentId || !session.documentIds.has(parentDocumentId)) {
+      return;
+    }
+    if (!session.documentIds.has(documentId)) {
+      if (session.documentIds.size >= MEDIA_DISCOVERY_MAX_DOCUMENTS) {
+        return;
+      }
+      session.documentIds.add(documentId);
+    }
+  }
+
+  mergeMediaDiscoveryCandidate(session, createMediaDiscoveryCandidate(details.url, {
+    frameId,
+    headers: details.requestHeaders,
+    referer: rawMediaHeaderValue(details.requestHeaders, "referer"),
+    fallbackReferer: session.fallbackReferer,
+    observedAt: Date.now()
+  }));
+}
+
+function normalizeMediaSnapshotURLs(value) {
+  const rawURLs = Array.isArray(value) ? value : value?.urls;
+  if (!Array.isArray(rawURLs)) {
+    return [];
+  }
+
+  const urls = [];
+  const seen = new Set();
+  for (const rawURL of rawURLs) {
+    const url = normalizeMediaManifestURL(rawURL);
+    if (!url || seen.has(url)) {
+      continue;
+    }
+    seen.add(url);
+    urls.push(url);
+    if (urls.length >= MEDIA_DISCOVERY_MAX_CANDIDATES) {
+      break;
+    }
+  }
+  return urls;
+}
+
+function normalizeMediaSnapshot(value) {
+  return {
+    urls: normalizeMediaSnapshotURLs(value)
+  };
+}
+
+async function requestMediaSnapshot(tabId, nonce) {
+  if (mediaDiscoveryTabId(tabId) === null || !chrome.tabs?.sendMessage) {
+    return { urls: [] };
+  }
+
+  const result = await callExtensionApi(chrome.tabs, "sendMessage", [
+    tabId,
+    { action: MEDIA_SNAPSHOT_MESSAGE_ACTION, nonce },
+    { frameId: 0 }
+  ]);
+  return result.ok ? normalizeMediaSnapshot(result.value) : { urls: [] };
+}
+
+function requestMediaDocumentIdentity(tabId, windowId = null) {
+  if (mediaDiscoveryTabId(tabId) === null || !chrome.tabs?.sendMessage) {
+    return Promise.resolve(null);
+  }
+
+  const nonce = nextMediaDiscoveryNonce();
+  const promise = new Promise(resolve => {
+    const timer = setTimeout(() => {
+      settleMediaDocumentIdentityRequest(nonce, null);
+    }, 1000);
+    pendingMediaDocumentIdentityRequests.set(nonce, {
+      tabId,
+      windowId: mediaDiscoveryWindowId(windowId),
+      timer,
+      resolve
+    });
+  });
+
+  void callExtensionApi(chrome.tabs, "sendMessage", [
+    tabId,
+    { action: MEDIA_SNAPSHOT_MESSAGE_ACTION, nonce },
+    { frameId: 0 }
+  ]).then(result => {
+    if (!result.ok) {
+      settleMediaDocumentIdentityRequest(nonce, null);
+    }
+  });
+  return promise;
+}
+
+function startMediaDiscoverySession(options = {}) {
+  const tabId = mediaDiscoveryTabId(options.tabId);
+  const fallbackURL = normalizePageMediaURL(options.fallbackURL);
+  if (tabId === null || !fallbackURL) {
+    return Promise.resolve({
+      url: fallbackURL,
+      referer: normalizeObservedMediaReferer(options.fallbackReferer, fallbackURL),
+      headers: []
+    });
+  }
+
+  const existing = activeMediaDiscoverySessions.get(tabId);
+  if (existing && !existing.closed) {
+    const requestedWindowId = mediaDiscoveryWindowId(options.windowId);
+    if (existing.windowId === requestedWindowId && existing.fallbackURL === fallbackURL) {
+      return existing.promise;
+    }
+    // A delayed tabs.onUpdated notification must not let a new Fetch media
+    // action reuse a session belonging to a different page in the same tab.
+    cancelMediaDiscoverySession(existing);
+  }
+
+  const canonicalURL = normalizeObservedMediaReferer(options.canonicalURL, fallbackURL);
+  const startedAt = Date.now();
+  const session = {
+    tabId,
+    windowId: mediaDiscoveryWindowId(options.windowId),
+    fallbackURL,
+    fallbackReferer: canonicalURL || fallbackURL,
+    startedAt,
+    expiresAt: startedAt + MEDIA_DISCOVERY_SESSION_MS,
+    identityNonce: nextMediaDiscoveryNonce(),
+    documentId: null,
+    contentDocumentBound: false,
+    documentIds: new Set(),
+    pendingSnapshotURLs: [],
+    candidates: new Map(),
+    closed: false,
+    invalidated: false,
+    timer: null,
+    resolve: null,
+    promise: null
+  };
+  session.promise = new Promise(resolve => {
+    session.resolve = resolve;
+  });
+  activeMediaDiscoverySessions.set(tabId, session);
+  installMediaDiscoveryObserver(session);
+  session.timer = setTimeout(() => finishMediaDiscoverySession(session), MEDIA_DISCOVERY_SESSION_MS);
+
+  void requestMediaSnapshot(tabId, session.identityNonce).then(snapshot => {
+    if (session.closed) {
+      return;
+    }
+    // Hold the content snapshot until the content-originated identity port
+    // binds the initiating top-frame document. A same-URL reload can
+    // otherwise contribute a manifest from the wrong document. Browsers that
+    // cannot provide that identity use the canonical page fallback.
+    session.pendingSnapshotURLs = snapshot.urls;
+    if (!session.contentDocumentBound) return;
+    for (const url of session.pendingSnapshotURLs.splice(0)) {
+      mergeMediaDiscoveryCandidate(session, createMediaDiscoveryCandidate(url, {
+        frameId: 0,
+        fallbackReferer: session.fallbackReferer,
+        observedAt: session.startedAt
+      }));
+    }
+  }).catch(() => {
+    // A restricted page or an unavailable content script only removes the
+    // snapshot source. The bounded webRequest session and page fallback remain
+    // usable without retrying or injecting code.
+  });
+
+  return session.promise;
+}
+
+function installMediaDiscoveryObserver(session) {
+  const tabId = mediaDiscoveryTabId(session?.tabId);
+  if (tabId === null || mediaDiscoveryObserverRegistrations.has(tabId)) {
+    return;
+  }
+
+  const event = chrome.webRequest?.onBeforeSendHeaders;
+  if (!event?.addListener) {
+    return;
+  }
+
+  const filter = { urls: ["http://*/*", "https://*/*"], tabId };
+  const listener = details => observeMediaRequest(details);
+  try {
+    // Request-header observation is non-blocking and is registered only while
+    // a user-triggered discovery session is active. Do not request
+    // blocking. Chromium requires extraHeaders for some safe context headers;
+    // any credential-bearing headers exposed by that flag are discarded by
+    // observeMediaRequest and are never persisted or forwarded.
+    event.addListener(listener, filter, ["requestHeaders", "extraHeaders"]);
+    mediaDiscoveryObserverRegistrations.set(tabId, { event, listener });
+  } catch (error) {
+    // Firefox versions that do not accept extraHeaders still support the
+    // non-blocking requestHeaders signal. Retry with the portable subset; if
+    // that also fails, the Fetch media action falls back to the page URL.
+    try {
+      event.addListener(listener, filter, ["requestHeaders"]);
+      mediaDiscoveryObserverRegistrations.set(tabId, { event, listener });
+    } catch (fallbackError) {
+      // The Fetch media action will fall back to the canonical page URL.
+    }
+  }
+}
+
+function uninstallMediaDiscoveryObserver(tabId) {
+  const normalizedTabId = mediaDiscoveryTabId(tabId);
+  const registrations = normalizedTabId === null
+    ? Array.from(mediaDiscoveryObserverRegistrations.entries())
+    : [[normalizedTabId, mediaDiscoveryObserverRegistrations.get(normalizedTabId)]];
+  for (const [registrationTabId, registration] of registrations) {
+    if (!registration) {
+      continue;
+    }
+    mediaDiscoveryObserverRegistrations.delete(registrationTabId);
+    try {
+      registration.event.removeListener?.(registration.listener);
+    } catch (error) {
+      // The discovery state is still closed; a browser-specific listener
+      // teardown failure must not keep request metadata in the session.
+    }
+  }
+}
+
+function cancelMediaDiscoveryOnActivation(activeInfo) {
+  const activeTabId = mediaDiscoveryTabId(activeInfo?.tabId);
+  if (activeTabId === null) {
+    return;
+  }
+  for (const session of activeMediaDiscoverySessions.values()) {
+    // Tab ids are browser-global. Keeping only the newly active tab also
+    // handles focus moving to another window; a session from that window is
+    // no longer an active-tab discovery session and must not observe requests.
+    if (session.tabId === activeTabId) {
+      continue;
+    }
+    cancelMediaDiscoverySession(session);
+  }
+}
+
+if (chrome.tabs?.onUpdated?.addListener) {
+  chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+    if (changeInfo?.status === "loading" || typeof changeInfo?.url === "string") {
+      cancelMediaDiscoveryForTab(tabId);
+    }
+  });
+}
+
+if (chrome.tabs?.onRemoved?.addListener) {
+  chrome.tabs.onRemoved.addListener(tabId => cancelMediaDiscoveryForTab(tabId));
+}
+
+if (chrome.tabs?.onActivated?.addListener) {
+  chrome.tabs.onActivated.addListener(cancelMediaDiscoveryOnActivation);
 }
 
 function captureEnabledForURL(rawURL) {
@@ -1424,6 +2131,7 @@ async function sendToFirelink(urls, referer = "", options = {}) {
   const shouldForwardCookies = normalizedURLs.length === 1
     && !isMagnetURL(normalizedURLs[0])
     && !hasTorrentBytes
+    && options.media !== true
     && (captureMode === "automatic" || options.forwardCookies === true);
   const cookieStoreId = shouldForwardCookies
     ? await resolveCookieStoreId(options)
@@ -1444,12 +2152,17 @@ async function sendToFirelink(urls, referer = "", options = {}) {
   if (hasTorrentBytes && (options.media === true || !isTorrent)) {
     return false;
   }
+  const mediaHeaders = options.media === true
+    ? mediaHeadersPayload(options.mediaHeaders)
+    : undefined;
   const payload = {
     urls: normalizedURLs,
     referer,
     silent: captureMode === "automatic",
     filename: options.filename,
-    headers: options.includeUserAgent === false
+    headers: options.media === true
+      ? mediaHeaders
+      : options.includeUserAgent === false
       || typeof navigator === "undefined"
       || typeof navigator.userAgent !== "string"
       ? undefined
@@ -2146,7 +2859,165 @@ async function recoverPendingCaptures() {
   return pendingCaptureRecovery;
 }
 
-async function fetchMediaForTab(tab, options = {}) {
+async function resolveMediaFetchTarget(tab, requestedURL, options = {}) {
+  const directManifestURL = normalizeMediaManifestURL(requestedURL);
+  const canonicalPageURL = normalizePageMediaURL(tab?.url);
+  if (options.preferSrcUrl === true) {
+    // A context-menu link is an explicit user-selected source. Discovery of
+    // the active tab must not replace it with an unrelated player manifest.
+    return {
+      url: requestedURL,
+      referer: normalizeObservedMediaReferer(canonicalPageURL, requestedURL),
+      headers: []
+    };
+  }
+  if (directManifestURL) {
+    return {
+      url: directManifestURL,
+      referer: normalizeObservedMediaReferer(canonicalPageURL, directManifestURL),
+      headers: []
+    };
+  }
+
+  const tabId = mediaDiscoveryTabId(tab?.id);
+  if (tabId === null) {
+    return {
+      url: requestedURL,
+      referer: normalizeObservedMediaReferer(requestedURL),
+      headers: []
+    };
+  }
+
+  return startMediaDiscoverySession({
+    tabId,
+    windowId: mediaDiscoveryWindowId(tab?.windowId),
+    canonicalURL: canonicalPageURL,
+    fallbackURL: requestedURL,
+    fallbackReferer: canonicalPageURL || requestedURL
+  });
+}
+
+function mediaFetchRequestKey(tab, options = {}) {
+  const tabId = mediaDiscoveryTabId(tab?.id);
+  if (tabId === null) {
+    return null;
+  }
+  const requestedURL = options.preferSrcUrl === true
+    ? normalizePageMediaURL(options.srcUrl) || normalizePageMediaURL(tab?.url)
+    : normalizePageMediaURL(tab?.url) || normalizePageMediaURL(options.srcUrl);
+  return `${tabId}\u0000${requestedURL || ""}`;
+}
+
+function fetchMediaForTab(tab, options = {}) {
+  const requestKey = mediaFetchRequestKey(tab, options);
+  if (requestKey !== null) {
+    const existing = activeMediaFetchHandoffs.get(requestKey);
+    if (existing) {
+      return existing;
+    }
+  }
+
+  const promise = fetchMediaForTabInternal(tab, options);
+  if (requestKey === null) {
+    return promise;
+  }
+
+  activeMediaFetchHandoffs.set(requestKey, promise);
+  const clear = () => {
+    if (activeMediaFetchHandoffs.get(requestKey) === promise) {
+      activeMediaFetchHandoffs.delete(requestKey);
+    }
+  };
+  void promise.then(clear, clear);
+  return promise;
+}
+
+function connectMediaDiscoveryKeepAlive(tabId) {
+  if (mediaDiscoveryTabId(tabId) === null || typeof chrome.tabs?.connect !== "function") {
+    return null;
+  }
+  try {
+    // A context-menu event has no response channel of its own. Keep a
+    // bounded port to the originating content script open for the duration
+    // of discovery so an MV3 service worker cannot be discarded while its
+    // eight-second session is waiting for requests.
+    const port = chrome.tabs.connect(tabId, {
+      frameId: 0,
+      name: MEDIA_DISCOVERY_KEEPALIVE_PORT
+    });
+    port?.onMessage?.addListener(() => {});
+    return port;
+  } catch (error) {
+    return null;
+  }
+}
+
+function releaseMediaDiscoveryKeepAlive(port) {
+  try {
+    port?.disconnect?.();
+  } catch (error) {
+    // The browser may already have disconnected a restricted or closed tab.
+  }
+}
+
+async function revalidateMediaFetchTab(tab, expectedDocumentId = null) {
+  const tabId = mediaDiscoveryTabId(tab?.id);
+  if (tabId === null) {
+    return tab;
+  }
+
+  const originalURL = normalizePageMediaURL(tab?.url);
+  if (!originalURL) {
+    return null;
+  }
+
+  let currentTab = tab;
+  if (typeof chrome.tabs?.get === "function") {
+    const result = await callExtensionApi(chrome.tabs, "get", [tabId]);
+    if (!result.ok || !result.value || typeof result.value !== "object") {
+      return null;
+    }
+    currentTab = result.value;
+  }
+
+  if (mediaDiscoveryTabId(currentTab.id) !== tabId
+    || normalizePageMediaURL(currentTab.url) !== originalURL) {
+    return null;
+  }
+  // The discovery action is scoped to the active tab. Recheck the browser's
+  // tab state immediately before handoff so a delayed activation event cannot
+  // turn a background-tab request into a media transfer.
+  if (currentTab.active === false) {
+    return null;
+  }
+
+  const originalWindowId = mediaDiscoveryWindowId(tab.windowId);
+  const currentWindowId = mediaDiscoveryWindowId(currentTab.windowId);
+  if (originalWindowId !== null && originalWindowId !== currentWindowId) {
+    return null;
+  }
+  if (expectedDocumentId !== null) {
+    const documentId = await requestMediaDocumentIdentity(tabId, currentWindowId);
+    if (documentId !== expectedDocumentId) {
+      return null;
+    }
+  }
+  return currentTab;
+}
+
+async function fetchMediaForTabInternal(tab, options = {}) {
+  // Popup messaging channels close as soon as the popup is dismissed. Keep a
+  // bounded port to the originating content script for every media fetch so
+  // an MV3 service worker cannot be suspended during discovery or handoff.
+  const keepAlivePort = connectMediaDiscoveryKeepAlive(tab?.id);
+  try {
+    return await performMediaFetchForTab(tab, options);
+  } finally {
+    releaseMediaDiscoveryKeepAlive(keepAlivePort);
+  }
+}
+
+async function performMediaFetchForTab(tab, options = {}) {
   const pageURL = options.preferSrcUrl === true
     ? normalizePageMediaURL(options.srcUrl) || normalizePageMediaURL(tab?.url)
     : normalizePageMediaURL(tab?.url) || normalizePageMediaURL(options.srcUrl);
@@ -2164,17 +3035,45 @@ async function fetchMediaForTab(tab, options = {}) {
     return { accepted: false, ambiguous: false };
   }
 
+  let mediaTarget;
+  try {
+    mediaTarget = await resolveMediaFetchTarget(tab, pageURL, options);
+  } catch (error) {
+    // Discovery is an optional source of request context. A failed content
+    // snapshot or observer must not prevent the existing page handoff.
+    mediaTarget = {
+      url: pageURL,
+      referer: pageURL,
+      headers: []
+    };
+  }
+
+  if (mediaTarget.invalidated === true) {
+    return { accepted: false, ambiguous: false };
+  }
+
+  let handoffTab;
+  try {
+    handoffTab = await revalidateMediaFetchTab(tab, mediaTarget.documentId);
+  } catch (error) {
+    handoffTab = null;
+  }
+  if (!handoffTab) {
+    return { accepted: false, ambiguous: false };
+  }
+
   let requestMayHaveBeenSent = false;
   let accepted = false;
   try {
-    accepted = await sendToFirelink([pageURL], pageURL, {
+    accepted = await sendToFirelink([mediaTarget.url], mediaTarget.referer, {
       allowProtocolFallback: true,
-      cookieStoreId: tab?.cookieStoreId,
-      incognito: tab?.incognito === true,
+      cookieStoreId: handoffTab?.cookieStoreId,
+      incognito: handoffTab?.incognito === true,
       // yt-dlp handles media cookies through Firelink's configured browser
       // source. A full page Cookie header can exceed YouTube's request limit.
       forwardCookies: false,
       includeUserAgent: false,
+      mediaHeaders: mediaTarget.headers,
       media: true,
       notifyOnFailure: options.notifyOnFailure !== false,
       onRequestMayHaveBeenSent: () => {

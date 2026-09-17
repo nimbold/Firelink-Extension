@@ -30,6 +30,10 @@ function firelinkResponseForRequest(url, options = {}, settings = {}) {
     "X-Firelink-Server": "1",
     "X-Firelink-Protocol-Version": String(protocolVersion)
   };
+  if (settings.serverSession !== null) {
+    headers["X-Firelink-Server-Session"] = settings.serverSession
+      || "0123456789abcdef0123456789abcdef";
+  }
 
   if (timestamp && nonce) {
     headers["X-Firelink-Server-Port"] = String(proofPort);
@@ -58,6 +62,8 @@ test("uses desktop port range server identity headers", () => {
     PROTOCOL_VERSION_HEADER,
     SERVER_PROOF_HEADER,
     SERVER_PORT_HEADER,
+    SERVER_SESSION_HEADER,
+    SESSION_BINDING_HEADER,
     PROTOCOL_VERSION
   } = loadProtocol();
 
@@ -68,17 +74,19 @@ test("uses desktop port range server identity headers", () => {
   assert.equal(PROTOCOL_VERSION_HEADER, "X-Firelink-Protocol-Version");
   assert.equal(SERVER_PROOF_HEADER, "X-Firelink-Server-Proof");
   assert.equal(SERVER_PORT_HEADER, "X-Firelink-Server-Port");
+  assert.equal(SERVER_SESSION_HEADER, "X-Firelink-Server-Session");
+  assert.equal(SESSION_BINDING_HEADER, "X-Firelink-Session-Binding");
   assert.equal(PROTOCOL_VERSION, 4);
 });
 
-test("keeps ordinary downloads compatible with the protocol 4 desktop", async () => {
+test("keeps ordinary downloads compatible with the protocol 4 desktop without session binding", async () => {
   const originalFetch = global.fetch;
   const { signedFetch } = loadProtocol();
 
   global.fetch = async (url, options = {}) => firelinkResponseForRequest(
     url,
     options,
-    { protocolVersion: 4 }
+    { protocolVersion: 4, serverSession: null }
   );
 
   try {
@@ -87,6 +95,36 @@ test("keeps ordinary downloads compatible with the protocol 4 desktop", async ()
       requiredProtocolVersion: 3,
       payload: { urls: ["https://example.com/file.zip"] }
     }));
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("uses the advertised server session when the desktop supports session binding", async () => {
+  const originalFetch = global.fetch;
+  const { signedFetch } = loadProtocol();
+  const expectedSession = "abcdef0123456789abcdef0123456789";
+  const requests = [];
+
+  global.fetch = async (url, options = {}) => {
+    requests.push({ url, options });
+    return firelinkResponseForRequest(url, options, {
+      serverSession: expectedSession
+    });
+  };
+
+  try {
+    await assert.doesNotReject(() => signedFetch("/download", "secret", {
+      method: "POST",
+      payload: { urls: ["https://example.com/file.zip"] }
+    }));
+    const ping = requests.find(request => request.url.endsWith("/ping"));
+    const download = requests.find(request => request.url.endsWith("/download"));
+    assert.ok(ping);
+    assert.ok(download);
+    assert.equal(header(ping.options, "X-Firelink-Server-Session"), undefined);
+    assert.equal(header(download.options, "X-Firelink-Server-Session"), expectedSession);
+    assert.equal(header(download.options, "X-Firelink-Session-Binding"), "1");
   } finally {
     global.fetch = originalFetch;
   }
@@ -213,10 +251,13 @@ test("generates expected HMAC-SHA256 request signature", async () => {
   const body = '{"urls":["https://example.com/file.zip"]}';
   const expected = crypto
     .createHmac("sha256", token)
-    .update(timestamp + body)
+    .update(timestamp + "\n0123456789abcdef0123456789abcdef\n" + body)
     .digest("hex");
 
-  assert.equal(await generateHMAC(token, timestamp, body), expected);
+  assert.equal(
+    await generateHMAC(token, timestamp, body, "0123456789abcdef0123456789abcdef"),
+    expected
+  );
 });
 
 test("generates expected HMAC-SHA256 server proof", async () => {
@@ -273,7 +314,8 @@ test("discovers Firelink before sending signed download payload", async () => {
       await generateHMAC(
         "secret",
         download.options.headers["X-Firelink-Timestamp"],
-        '{"urls":["https://example.com/file.zip"]}'
+        '{"urls":["https://example.com/file.zip"]}',
+        download.options.headers["X-Firelink-Server-Session"]
       )
     );
   } finally {

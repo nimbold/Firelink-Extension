@@ -42,6 +42,8 @@ test("generates a Chromium Manifest V3 service worker manifest", () => {
   assert.equal(manifest.manifest_version, 3);
   assert.ok(manifest.permissions.includes("downloads"));
   assert.ok(manifest.permissions.includes("cookies"));
+  assert.ok(manifest.permissions.includes("webRequest"));
+  assert.equal(readJson(path.join(rootDir, "manifest.json")).browser_specific_settings.gecko_android.strict_min_version, "142.0");
   assert.deepEqual(manifest.host_permissions, ["<all_urls>"]);
   assert.equal(manifest.content_scripts[0].match_origin_as_fallback, true);
 });
@@ -66,6 +68,8 @@ test("packages Firefox and Chromium load-unpacked directories", () => {
     assert.deepEqual(chromiumManifest.background, {
       service_worker: "chromium-service-worker.js"
     });
+    assert.ok(firefoxManifest.permissions.includes("webRequest"));
+    assert.ok(chromiumManifest.permissions.includes("webRequest"));
     assert.equal(firefoxManifest.content_scripts[0].match_origin_as_fallback, true);
     assert.equal(chromiumManifest.content_scripts[0].match_origin_as_fallback, true);
     assert.equal(chromiumManifest.default_locale, "en");

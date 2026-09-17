@@ -8,6 +8,135 @@ const contentSource = fs.readFileSync(
   "utf8"
 );
 
+test("content media snapshot returns only bounded HTTP manifest resources", () => {
+  let listener;
+  let documentPort;
+  const documentPortMessages = [];
+  const mediaElement = {
+    currentSrc: "blob:https://example.com/player",
+    src: "https://cdn.example/from-element.mpd?token=one",
+    getAttribute(name) {
+      return name === "src" ? "https://cdn.example/from-element.mpd?token=one" : null;
+    }
+  };
+  const context = vm.createContext({
+    URL,
+    document: {
+      baseURI: "https://example.com/watch",
+      addEventListener() {},
+      querySelectorAll() {
+        return [mediaElement];
+      }
+    },
+    performance: {
+      getEntriesByType(type) {
+        assert.equal(type, "resource");
+        return [
+          { name: "https://cdn.example/master.M3U8?token=two#fragment" },
+          { name: "https://cdn.example/segment.ts" },
+          { name: "data:text/plain,https://cdn.example/fake.m3u8" },
+          { name: "https://cdn.example/manifest.ism/manifest" }
+        ];
+      }
+    },
+    chrome: {
+      runtime: {
+        onMessage: {
+          addListener(value) { listener = value; }
+        },
+        connect(details) {
+          documentPort = {
+            name: details.name,
+            postMessage(message) { documentPortMessages.push(message); },
+            disconnect() {},
+            onMessage: { addListener() {} },
+            onDisconnect: { addListener() {} }
+          };
+          return documentPort;
+        }
+      }
+    }
+  });
+
+  vm.runInContext(contentSource, context);
+  let response;
+  listener(
+    { action: "collectMediaSnapshotV1", nonce: "nonce-1" },
+    {},
+    value => { response = value; }
+  );
+
+  assert.deepEqual(JSON.parse(JSON.stringify(response)), {
+    urls: [
+      "https://cdn.example/master.M3U8?token=two#fragment",
+      "https://cdn.example/manifest.ism/manifest",
+      "https://cdn.example/from-element.mpd?token=one"
+    ]
+  });
+  assert.equal(documentPort.name, "firelink-media-document-v1");
+  assert.deepEqual(JSON.parse(JSON.stringify(documentPortMessages)), [
+    { type: "document-identity", nonce: "nonce-1" }
+  ]);
+});
+
+test("content accepts the bounded media discovery keepalive and stops it on disconnect", () => {
+  let connectListener;
+  let disconnectListener;
+  let heartbeat;
+  let clearedTimer = null;
+  const messages = [];
+  const context = vm.createContext({
+    URL,
+    document: {
+      baseURI: "https://example.com/watch",
+      addEventListener() {},
+      querySelectorAll() { return []; }
+    },
+    performance: { getEntriesByType() { return []; } },
+    setInterval(callback, delay) {
+      assert.equal(delay, 2_000);
+      heartbeat = callback;
+      return "media-discovery-timer";
+    },
+    clearInterval(timer) {
+      clearedTimer = timer;
+    },
+    chrome: {
+      runtime: {
+        onMessage: { addListener() {} },
+        onConnect: {
+          addListener(listener) { connectListener = listener; }
+        }
+      }
+    }
+  });
+
+  vm.runInContext(contentSource, context);
+  connectListener({ name: "unrelated-port" });
+  assert.equal(heartbeat, undefined);
+
+  const port = {
+    name: "firelink-media-discovery-v1",
+    postMessage(message) { messages.push(message); },
+    onDisconnect: {
+      addListener(listener) { disconnectListener = listener; }
+    }
+  };
+  connectListener(port);
+  assert.deepEqual(JSON.parse(JSON.stringify(messages)), [{ type: "ready" }]);
+
+  heartbeat();
+  assert.deepEqual(JSON.parse(JSON.stringify(messages)), [
+    { type: "ready" },
+    { type: "heartbeat" }
+  ]);
+
+  disconnectListener();
+  assert.equal(clearedTimer, "media-discovery-timer");
+  heartbeat();
+  assert.equal(messages.length, 2);
+});
+
 test("content link extraction accepts magnet links", () => {
   let listener;
   const context = vm.createContext({

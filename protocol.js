@@ -8,6 +8,8 @@
   const CLIENT_NONCE_HEADER = "X-Firelink-Client-Nonce";
   const SERVER_PROOF_HEADER = "X-Firelink-Server-Proof";
   const SERVER_PORT_HEADER = "X-Firelink-Server-Port";
+  const SERVER_SESSION_HEADER = "X-Firelink-Server-Session";
+  const SESSION_BINDING_HEADER = "X-Firelink-Session-Binding";
   const SERVER_PROOF_PREFIX = "firelink-server-proof";
   // Version 4 remains the baseline discovery contract for ordinary downloads.
   // Remote torrent and magnet payloads opt into version 5, while browser-local
@@ -48,8 +50,9 @@
       .join("");
   }
 
-  async function generateHMAC(token, timestamp, body) {
-    return generateHMACMessage(token, timestamp + body);
+  async function generateHMAC(token, timestamp, body, serverSession = "") {
+    const sessionBinding = serverSession ? `\n${serverSession}\n` : "";
+    return generateHMACMessage(token, timestamp + sessionBinding + body);
   }
 
   async function generateServerProof(token, timestamp, nonce, port) {
@@ -141,7 +144,10 @@
       ? ""
       : JSON.stringify(options.payload);
     const timestamp = options.timestamp || nextRequestTimestamp();
-    const signature = await generateHMAC(token, timestamp, body);
+    const serverSession = typeof options.serverSession === "string"
+      ? options.serverSession
+      : "";
+    const signature = await generateHMAC(token, timestamp, body, serverSession);
     const controller = options.controller || new AbortController();
     const timeout = setTimeout(
       () => controller.abort(),
@@ -154,6 +160,10 @@
     };
     if (options.clientNonce) {
       headers[CLIENT_NONCE_HEADER] = options.clientNonce;
+    }
+    if (serverSession) {
+      headers[SERVER_SESSION_HEADER] = serverSession;
+      headers[SESSION_BINDING_HEADER] = "1";
     }
     if (body) {
       headers["Content-Type"] = "application/json";
@@ -183,7 +193,15 @@
       timeoutMs: DISCOVERY_TIMEOUT_MS
     });
     await verifyServerProof(response, token, timestamp, nonce, port);
-    return { port, response, controller };
+    const serverSession = response.headers.get(SERVER_SESSION_HEADER) || "";
+    if (serverSession && !/^[a-f0-9]{32}$/i.test(serverSession)) {
+      throw new FirelinkRequestError(
+        "Firelink desktop app session could not be verified",
+        426,
+        true
+      );
+    }
+    return { port, response, controller, serverSession };
   }
 
   async function discoverServer(token) {
@@ -263,7 +281,6 @@
     if (path === "/ping") {
       return server.response;
     }
-
     const timestamp = nextRequestTimestamp();
     const nonce = generateNonce();
     let response;
@@ -271,7 +288,8 @@
       response = await requestAtPort(server.port, path, token, {
         ...options,
         timestamp,
-        clientNonce: nonce
+        clientNonce: nonce,
+        serverSession: server.serverSession || undefined
       });
     } catch (error) {
       preferredPort = null;
@@ -323,6 +341,8 @@
     CLIENT_NONCE_HEADER,
     SERVER_PROOF_HEADER,
     SERVER_PORT_HEADER,
+    SERVER_SESSION_HEADER,
+    SESSION_BINDING_HEADER,
     PROTOCOL_VERSION,
     FirelinkRequestError,
     generateHMAC,

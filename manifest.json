@@ -11,7 +11,8 @@
     "alarms",
     "scripting",
     "notifications",
-    "cookies"
+    "cookies",
+    "webRequest"
   ],
   "host_permissions": [
     "<all_urls>"

@@ -69,6 +69,7 @@ test("keeps popup localization and disclosure wiring safe for packaging", () => 
   assert.match(html, /locales\.js/);
   assert.match(html, /aria-expanded="false"/);
   assert.match(html, /aria-controls="pairing-content"/);
+  assert.match(html, /id="media-status"[^>]*role="status"[^>]*aria-live="polite"/);
   assert.doesNotMatch(popupSource, /innerHTML/);
   assert.match(popupSource, /connectionRequestId/);
   assert.match(popupSource, /isCurrentRequest/);
