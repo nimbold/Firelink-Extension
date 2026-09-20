@@ -12,6 +12,9 @@
   const SESSION_BINDING_HEADER = "X-Firelink-Session-Binding";
   const SERVER_PROOF_PREFIX = "firelink-server-proof";
   // Version 4 remains the baseline discovery contract for ordinary downloads.
+  // Version 7 adds the explicit two-phase media handoff contract; the
+  // background worker requests it only for media payloads carrying a bounded
+  // handoff id and phase.
   // Remote torrent and magnet payloads opt into version 5, while browser-local
   // torrent bytes require version 6 at the signed request boundary.
   const PROTOCOL_VERSION = 4;
@@ -22,12 +25,19 @@
   let lastRequestTimestamp = 0;
 
   class FirelinkRequestError extends Error {
-    constructor(message, status = null, serverReached = false, requestMayHaveBeenSent = false) {
+    constructor(
+      message,
+      status = null,
+      serverReached = false,
+      requestMayHaveBeenSent = false,
+      code = null
+    ) {
       super(message);
       this.name = "FirelinkRequestError";
       this.status = status;
       this.serverReached = serverReached;
       this.requestMayHaveBeenSent = requestMayHaveBeenSent;
+      this.code = code;
     }
   }
 
@@ -95,7 +105,9 @@
     throw new FirelinkRequestError(
       "Firelink desktop app must be updated for automatic capture",
       426,
-      true
+      true,
+      false,
+      "protocol-version"
     );
   }
 
@@ -321,7 +333,7 @@
       // request may already have been admitted before response authentication
       // failed. Automatic callers must preserve their original rather than
       // retrying or resuming into a possible duplicate.
-      if (path === "/download"
+      if ((path === "/download" || path === "/media-discovery")
         && identifiedFirelinkResponse
         && response?.ok === true
         && error

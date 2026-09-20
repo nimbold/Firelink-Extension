@@ -641,6 +641,40 @@ test("offline manual handoff launches then delivers original payload", async () 
   assert.equal(fixture.createdNotifications.length, 0);
 });
 
+test("cold-start media handoff downgrades once when launch reaches a legacy desktop", async () => {
+  const calls = [];
+  const fixture = createBackgroundContext(async (path, _token, request) => {
+    calls.push({ path, request });
+    if (calls.length === 1) {
+      throw { serverReached: false, requestMayHaveBeenSent: false };
+    }
+    if (path === "/download" && request.requiredProtocolVersion === 7) {
+      throw {
+        code: "protocol-version",
+        serverReached: true,
+        status: 426,
+        requestMayHaveBeenSent: false
+      };
+    }
+    return { ok: true };
+  });
+
+  const accepted = await vm.runInContext(
+    'sendToFirelink(["https://example.com/watch"], "https://example.com/watch", { media: true, mediaHandoffId: "m-cold-start", mediaPhase: "initial", notifyOnFailure: false })',
+    fixture.context
+  );
+
+  assert.equal(accepted, true);
+  assert.deepEqual(calls.map(call => [call.path, call.request?.requiredProtocolVersion]), [
+    ["/download", 7],
+    ["/ping", undefined],
+    ["/download", 7],
+    ["/download", 4]
+  ]);
+  assert.equal(calls[3].request.payload.media, true);
+  assert.equal(calls[3].request.payload.media_handoff_id, undefined);
+});
+
 test("reports a missing Firelink protocol registration", async () => {
   const fixture = createBackgroundContext(
     async () => {
@@ -4059,6 +4093,7 @@ test("preserves significant punctuation in browser-provided download URLs", asyn
 });
 
 test("popup media fetch sends the active page without a full cookie header", async () => {
+  const clock = createFakeDiscoveryClock();
   let payload = null;
   let requiredProtocolVersion = null;
   const fixture = createBackgroundContext(
@@ -4068,6 +4103,9 @@ test("popup media fetch sends the active page without a full cookie header", asy
       return { ok: true };
     },
     {
+      Date: clock.Date,
+      setTimeout: clock.setTimeout,
+      clearTimeout: clock.clearTimeout,
       activeTabs: [{
         id: 42,
         url: "https://youtube.com/watch?v=abc",
@@ -4091,16 +4129,25 @@ test("popup media fetch sends the active page without a full cookie header", asy
   });
 
   assert.deepEqual(JSON.parse(JSON.stringify(response)), { ok: true, ambiguous: false });
-  assert.deepEqual(JSON.parse(JSON.stringify(payload)), {
+  assert.deepEqual(JSON.parse(JSON.stringify({
+    urls: payload.urls,
+    referer: payload.referer,
+    silent: payload.silent,
+    media: payload.media,
+    media_phase: payload.media_phase
+  })), {
     urls: ["https://youtube.com/watch?v=abc"],
     referer: "https://youtube.com/watch?v=abc",
     silent: false,
-    media: true
+    media: true,
+    media_phase: "initial"
   });
-  assert.equal(requiredProtocolVersion, 4);
+  assert.match(payload.media_handoff_id, /^m-[a-z0-9_-]{1,128}$/);
+  assert.equal(requiredProtocolVersion, 7);
   assert.deepEqual(JSON.parse(JSON.stringify(fixture.cookieQueries)), []);
   assert.equal(fixture.mediaDiscoveryPorts.length, 1);
   assert.equal(fixture.mediaDiscoveryPorts[0].name, "firelink-media-discovery-v1");
+  await clock.advance(8000);
   assert.equal(fixture.mediaDiscoveryPorts[0].disconnected, true);
 });
 
@@ -4128,7 +4175,9 @@ test("media context menu sends the tab page instead of transient media src", asy
   assert.equal(payload.urls[0], "https://youtube.com/watch?v=abc");
   assert.equal(payload.referer, "https://youtube.com/watch?v=abc");
   assert.equal(payload.media, true);
-  assert.equal(requiredProtocolVersion, 4);
+  assert.equal(requiredProtocolVersion, 7);
+  assert.equal(payload.media_phase, "initial");
+  assert.match(payload.media_handoff_id, /^m-[a-z0-9_-]{1,128}$/);
 });
 
 test("context-menu media discovery keeps the originating tab port open until handoff", async () => {
@@ -4165,6 +4214,162 @@ test("context-menu media discovery keeps the originating tab port open until han
   assert.equal(fixture.mediaDiscoveryPorts[0].disconnected, true);
 });
 
+test("media fetch delivers the page immediately and updates the same handoff once", async () => {
+  const clock = createFakeDiscoveryClock();
+  const calls = [];
+  const payloads = [];
+  const fixture = createBackgroundContext(async (path, _token, request) => {
+    calls.push(path);
+    payloads.push(request.payload);
+    return { ok: true };
+  }, {
+    Date: clock.Date,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+    mediaDocumentIdByTab: { 30: "document-30" }
+  });
+
+  const handoff = vm.runInContext(
+    'fetchMediaForTab({ id: 30, windowId: 2, url: "https://example.com/watch" }, { notifyOnFailure: false })',
+    fixture.context
+  );
+  const result = await handoff;
+
+  assert.equal(result.accepted, true);
+  assert.equal(payloads.length, 1);
+  assert.deepEqual(calls, ["/download"]);
+  assert.equal(payloads[0].urls[0], "https://example.com/watch");
+  assert.equal(payloads[0].media_phase, "initial");
+  assert.equal(payloads[0].media_protocol_version, 7);
+  assert.match(payloads[0].media_handoff_id, /^m-[a-z0-9_-]{1,128}$/);
+  assert.equal(fixture.mediaDiscoveryPorts[0].disconnected, false);
+
+  emitMediaRequest(fixture, {
+    tabId: 30,
+    windowId: 2,
+    frameId: 0,
+    documentId: "document-30",
+    url: "https://cdn.example/master.m3u8",
+    requestHeaders: [{ name: "Origin", value: "https://example.com" }]
+  });
+
+  await clock.advance(8000);
+  await result.discoveryDone;
+
+  assert.equal(payloads.length, 2);
+  assert.deepEqual(calls, ["/download", "/media-discovery"]);
+  assert.equal(payloads[1].urls[0], "https://cdn.example/master.m3u8");
+  assert.equal(payloads[1].phase, "discovered");
+  assert.equal(payloads[1].handoff_id, payloads[0].media_handoff_id);
+  assert.equal(payloads[1].media_protocol_version, 7);
+  assert.equal(payloads[1].media, undefined);
+  assert.equal(payloads[1].cookies, undefined);
+  assert.equal(payloads[1].cookie_scopes, undefined);
+  assert.equal(fixture.mediaDiscoveryPorts[0].disconnected, true);
+});
+
+test("media discovery replays one native ACK timeout against the admission fence", async () => {
+  const clock = createFakeDiscoveryClock();
+  const calls = [];
+  let discoveryAttempts = 0;
+  const fixture = createBackgroundContext(async path => {
+    calls.push(path);
+    if (path === "/media-discovery" && discoveryAttempts++ === 0) {
+      throw { serverReached: true, status: 504, requestMayHaveBeenSent: true };
+    }
+    return { ok: true };
+  }, {
+    Date: clock.Date,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+    mediaDocumentIdByTab: { 30: "document-30" }
+  });
+
+  const handoff = vm.runInContext(
+    'fetchMediaForTab({ id: 30, windowId: 2, url: "https://example.com/watch" }, { notifyOnFailure: false })',
+    fixture.context
+  );
+  const result = await handoff;
+  emitMediaRequest(fixture, {
+    tabId: 30,
+    windowId: 2,
+    frameId: 0,
+    documentId: "document-30",
+    url: "https://cdn.example/master.m3u8",
+    requestHeaders: []
+  });
+
+  await clock.advance(8000);
+  await result.discoveryDone;
+
+  assert.equal(result.accepted, true);
+  assert.deepEqual(calls, ["/download", "/media-discovery", "/media-discovery"]);
+});
+
+test("media discovery sends no update when there is no candidate", async () => {
+  const clock = createFakeDiscoveryClock();
+  const payloads = [];
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payloads.push(request.payload);
+    return { ok: true };
+  }, {
+    Date: clock.Date,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout
+  });
+
+  const handoff = vm.runInContext(
+    'fetchMediaForTab({ id: 31, url: "https://example.com/watch" }, { notifyOnFailure: false })',
+    fixture.context
+  );
+  const result = await handoff;
+  await clock.advance(8000);
+  await result.discoveryDone;
+
+  assert.equal(payloads.length, 1);
+  assert.equal(payloads[0].media_phase, "initial");
+  assert.equal(vm.runInContext("activeMediaDiscoverySessions.size", fixture.context), 0);
+});
+
+test("media discovery ignores duplicate and late candidates after one update", async () => {
+  const clock = createFakeDiscoveryClock();
+  const payloads = [];
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payloads.push(request.payload);
+    return { ok: true };
+  }, {
+    Date: clock.Date,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+    mediaDocumentIdByTab: { 32: "document-32" }
+  });
+
+  const handoff = vm.runInContext(
+    'fetchMediaForTab({ id: 32, url: "https://example.com/watch" }, { notifyOnFailure: false })',
+    fixture.context
+  );
+  const result = await handoff;
+  emitMediaRequest(fixture, {
+    tabId: 32,
+    frameId: 0,
+    documentId: "document-32",
+    url: "https://cdn.example/first.mpd",
+    requestHeaders: []
+  });
+  await clock.advance(8000);
+  await result.discoveryDone;
+
+  emitMediaRequest(fixture, {
+    tabId: 32,
+    frameId: 0,
+    documentId: "document-32",
+    url: "https://cdn.example/late.m3u8",
+    requestHeaders: []
+  });
+  assert.equal(payloads.length, 2);
+  assert.equal(payloads[1].urls[0], "https://cdn.example/first.mpd");
+});
+
 test("media context menu sends a clicked media page link with explicit media intent", async () => {
   let payload = null;
   let requiredProtocolVersion = null;
@@ -4187,13 +4392,21 @@ test("media context menu sends a clicked media page link with explicit media int
   );
   await new Promise(resolve => setImmediate(resolve));
 
-  assert.deepEqual(JSON.parse(JSON.stringify(payload)), {
+  assert.deepEqual(JSON.parse(JSON.stringify({
+    urls: payload.urls,
+    referer: payload.referer,
+    silent: payload.silent,
+    media: payload.media,
+    media_phase: payload.media_phase
+  })), {
     urls: ["https://www.youtube.com/watch?v=abc"],
     referer: "https://www.youtube.com/playlist?list=xyz",
     silent: false,
-    media: true
+    media: true,
+    media_phase: "initial"
   });
-  assert.equal(requiredProtocolVersion, 4);
+  assert.match(payload.media_handoff_id, /^m-[a-z0-9_-]{1,128}$/);
+  assert.equal(requiredProtocolVersion, 7);
 });
 
 test("media intent wins over a torrent-looking page URL", async () => {
@@ -4214,7 +4427,7 @@ test("media intent wins over a torrent-looking page URL", async () => {
   assert.equal(result.ambiguous, false);
   assert.equal(payload.media, true);
   assert.equal(payload.torrent, undefined);
-  assert.equal(requiredProtocolVersion, 4);
+  assert.equal(requiredProtocolVersion, 7);
 });
 
 test("reports an ambiguous media handoff so the popup cannot blindly retry", async () => {
@@ -4231,6 +4444,154 @@ test("reports an ambiguous media handoff so the popup cannot blindly retry", asy
     accepted: false,
     ambiguous: true
   });
+});
+
+test("media discovery session fallback is synchronous and exposes settled promises", async () => {
+  const fixture = createBackgroundContext(async () => ({ ok: true }));
+  const session = vm.runInContext(
+    'startMediaDiscoverySession({ fallbackURL: "https://example.com/watch" })',
+    fixture.context
+  );
+
+  assert.equal(typeof session.then, "undefined");
+  assert.equal(session.closed, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(await session.promise)), {
+    url: "https://example.com/watch",
+    referer: "https://example.com/watch",
+    headers: []
+  });
+  await session.donePromise;
+});
+
+test("media discovery never sends a manifest update without a bound document identity", async () => {
+  const clock = createFakeDiscoveryClock();
+  const payloads = [];
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payloads.push(request.payload);
+    return { ok: true };
+  }, {
+    Date: clock.Date,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout
+  });
+
+  const handoff = vm.runInContext(
+    'fetchMediaForTab({ id: 41, url: "https://example.com/watch" }, { notifyOnFailure: false })',
+    fixture.context
+  );
+  const result = await handoff;
+  vm.runInContext(`mergeMediaDiscoveryCandidate(
+    activeMediaDiscoverySessions.get(41),
+    createMediaDiscoveryCandidate("https://cdn.example/unbound.m3u8", {
+      frameId: 0,
+      fallbackReferer: "https://example.com/watch"
+    })
+  )`, fixture.context);
+
+  await clock.advance(8000);
+  await result.discoveryDone;
+
+  assert.equal(payloads.length, 1);
+  assert.equal(payloads[0].media_phase, "initial");
+});
+
+test("versioned initial media handoff falls back once to legacy media before any request is sent", async () => {
+  const calls = [];
+  const fixture = createBackgroundContext(async (path, _token, request) => {
+    calls.push({ path, request });
+    if (request.requiredProtocolVersion === 7) {
+      throw {
+        code: "protocol-version",
+        serverReached: true,
+        status: 426,
+        requestMayHaveBeenSent: false
+      };
+    }
+    return { ok: true };
+  });
+
+  const accepted = await vm.runInContext(
+    'sendToFirelink(["https://example.com/watch"], "https://example.com/watch", { media: true, mediaHandoffId: "m-legacy", mediaPhase: "initial", notifyOnFailure: false })',
+    fixture.context
+  );
+
+  assert.equal(accepted, true);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].path, "/download");
+  assert.equal(calls[0].request.requiredProtocolVersion, 7);
+  assert.equal(calls[0].request.payload.media_handoff_id, "m-legacy");
+  assert.equal(calls[1].path, "/download");
+  assert.equal(calls[1].request.requiredProtocolVersion, 4);
+  assert.equal(calls[1].request.payload.media, true);
+  assert.equal(calls[1].request.payload.media_handoff_id, undefined);
+  assert.equal(calls[1].request.payload.media_phase, undefined);
+  assert.equal(calls[1].request.payload.media_protocol_version, undefined);
+});
+
+test("media handoff never retries a versioned request after an ambiguous protocol rejection", async () => {
+  const calls = [];
+  const fixture = createBackgroundContext(async (path, _token, request) => {
+    calls.push({ path, request });
+    throw {
+      code: "protocol-version",
+      serverReached: true,
+      status: 426,
+      requestMayHaveBeenSent: true
+    };
+  });
+
+  const accepted = await vm.runInContext(
+    'sendToFirelink(["https://example.com/watch"], "https://example.com/watch", { media: true, mediaHandoffId: "m-ambiguous", mediaPhase: "initial", notifyOnFailure: false })',
+    fixture.context
+  );
+
+  assert.equal(accepted, false);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].request.requiredProtocolVersion, 7);
+});
+
+test("legacy media fallback does not attempt a discovered update on an older desktop", async () => {
+  const clock = createFakeDiscoveryClock();
+  const calls = [];
+  const fixture = createBackgroundContext(async (path, _token, request) => {
+    calls.push({ path, request });
+    if (request.requiredProtocolVersion === 7) {
+      throw {
+        code: "protocol-version",
+        serverReached: true,
+        status: 426,
+        requestMayHaveBeenSent: false
+      };
+    }
+    return { ok: true };
+  }, {
+    Date: clock.Date,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+    mediaDocumentIdByTab: { 42: "document-42" }
+  });
+
+  const handoff = vm.runInContext(
+    'fetchMediaForTab({ id: 42, url: "https://example.com/watch" }, { notifyOnFailure: false })',
+    fixture.context
+  );
+  const result = await handoff;
+  emitMediaRequest(fixture, {
+    tabId: 42,
+    frameId: 0,
+    documentId: "document-42",
+    url: "https://cdn.example/master.m3u8",
+    requestHeaders: []
+  });
+
+  await clock.advance(8000);
+  await result.discoveryDone;
+
+  assert.equal(result.accepted, true);
+  assert.deepEqual(calls.map(call => [call.path, call.request.requiredProtocolVersion]), [
+    ["/download", 7],
+    ["/download", 4]
+  ]);
 });
 
 function createFakeDiscoveryClock() {
@@ -4366,20 +4727,22 @@ test("media discovery combines the content snapshot and requests using determini
 
   await clock.advance(8000);
   const result = await handoff;
+  await result.discoveryDone;
 
   assert.equal(result.accepted, true);
   assert.equal(payload.urls[0], "https://cdn.example/latest.m3u8");
   assert.equal(payload.referer, "https://example.com/watch");
-  assert.equal(payload.media, true);
+  assert.equal(payload.phase, "discovered");
+  assert.equal(payload.media_protocol_version, 7);
   assert.equal(fixture.sentMessages[0].message.action, "collectMediaSnapshotV1");
   assert.deepEqual(JSON.parse(JSON.stringify(fixture.sentMessages[0].options)), { frameId: 0 });
 });
 
 test("media discovery falls back after eight seconds and cleans up late events", async () => {
   const clock = createFakeDiscoveryClock();
-  let payload = null;
+  const payloads = [];
   const fixture = createBackgroundContext(async (_path, _token, request) => {
-    payload = request.payload;
+    payloads.push(request.payload);
     return { ok: true };
   }, {
     Date: clock.Date,
@@ -4391,16 +4754,14 @@ test("media discovery falls back after eight seconds and cleans up late events",
     'fetchMediaForTab({ id: 8, url: "https://example.com/watch" }, { notifyOnFailure: false })',
     fixture.context
   );
-  await clock.advance(8000);
   const result = await handoff;
-
   assert.equal(result.accepted, true);
-  assert.deepEqual(JSON.parse(JSON.stringify(payload)), {
-    urls: ["https://example.com/watch"],
-    referer: "https://example.com/watch",
-    silent: false,
-    media: true
-  });
+  assert.equal(payloads.length, 1);
+  assert.equal(payloads[0].urls[0], "https://example.com/watch");
+  assert.equal(payloads[0].media_phase, "initial");
+  await clock.advance(8000);
+  await result.discoveryDone;
+  assert.equal(payloads.length, 1);
   assert.equal(vm.runInContext("activeMediaDiscoverySessions.size", fixture.context), 0);
 
   emitMediaRequest(fixture, {
@@ -4409,7 +4770,8 @@ test("media discovery falls back after eight seconds and cleans up late events",
     url: "https://cdn.example/late.m3u8",
     requestHeaders: []
   });
-  assert.equal(payload.urls[0], "https://example.com/watch");
+  assert.equal(payloads.length, 1);
+  assert.equal(payloads[0].urls[0], "https://example.com/watch");
 });
 
 test("media discovery uses the page fallback when document identity is unavailable", async () => {
@@ -4448,9 +4810,9 @@ test("media discovery uses the page fallback when document identity is unavailab
 test("media discovery rejects a same-URL replacement document at handoff", async () => {
   const clock = createFakeDiscoveryClock();
   let snapshotCalls = 0;
-  let payload = null;
+  const payloads = [];
   const fixture = createBackgroundContext(async (_path, _token, request) => {
-    payload = request.payload;
+    payloads.push(request.payload);
     return { ok: true };
   }, {
     Date: clock.Date,
@@ -4459,7 +4821,8 @@ test("media discovery rejects a same-URL replacement document at handoff", async
     mediaSnapshotResponse: () => ({
       urls: [],
       documentId: snapshotCalls++ === 0 ? "old-document" : "new-document"
-    })
+    }),
+    mediaDocumentIdByTab: { 22: "new-document" }
   });
 
   const handoff = vm.runInContext(
@@ -4474,11 +4837,13 @@ test("media discovery rejects a same-URL replacement document at handoff", async
     requestHeaders: []
   });
 
-  await clock.advance(8000);
   const result = await handoff;
+  await clock.advance(8000);
+  await result.discoveryDone;
 
-  assert.equal(result.accepted, false);
-  assert.equal(payload, null);
+  assert.equal(result.accepted, true);
+  assert.equal(payloads.length, 1);
+  assert.equal(payloads[0].media_phase, "initial");
 });
 
 test("media discovery does not fetch or hand off encryption key and license URLs", async () => {
@@ -4521,9 +4886,9 @@ test("media discovery does not fetch or hand off encryption key and license URLs
 
 test("media discovery invalidates old-document candidates when the tab navigates", async () => {
   const clock = createFakeDiscoveryClock();
-  let payload = null;
+  const payloads = [];
   const fixture = createBackgroundContext(async (_path, _token, request) => {
-    payload = request.payload;
+    payloads.push(request.payload);
     return { ok: true };
   }, {
     Date: clock.Date,
@@ -4535,6 +4900,7 @@ test("media discovery invalidates old-document candidates when the tab navigates
     'fetchMediaForTab({ id: 12, url: "https://example.com/old" }, { notifyOnFailure: false })',
     fixture.context
   );
+  const result = await handoff;
   emitMediaRequest(fixture, {
     tabId: 12,
     frameId: 0,
@@ -4547,10 +4913,10 @@ test("media discovery invalidates old-document candidates when the tab navigates
     status: "loading",
     url: "https://example.com/new"
   });
-  const result = await handoff;
 
-  assert.equal(result.accepted, false);
-  assert.equal(payload, null);
+  assert.equal(result.accepted, true);
+  await result.discoveryDone;
+  assert.equal(payloads.length, 1);
   assert.equal(vm.runInContext("activeMediaDiscoverySessions.size", fixture.context), 0);
   assert.equal(fixture.webRequestListeners.length, 0);
 
@@ -4561,14 +4927,14 @@ test("media discovery invalidates old-document candidates when the tab navigates
     url: "https://cdn.example/new-document.m3u8",
     requestHeaders: []
   });
-  assert.equal(payload, null);
+  assert.equal(payloads.length, 1);
 });
 
 test("media discovery rejects a new top-frame document before navigation events arrive", async () => {
   const clock = createFakeDiscoveryClock();
-  let payload = null;
+  const payloads = [];
   const fixture = createBackgroundContext(async (_path, _token, request) => {
-    payload = request.payload;
+    payloads.push(request.payload);
     return { ok: true };
   }, {
     Date: clock.Date,
@@ -4580,6 +4946,7 @@ test("media discovery rejects a new top-frame document before navigation events 
     'fetchMediaForTab({ id: 15, windowId: 3, url: "https://example.com/watch" }, { notifyOnFailure: false })',
     fixture.context
   );
+  const result = await handoff;
   emitMediaRequest(fixture, {
     tabId: 15,
     windowId: 3,
@@ -4597,10 +4964,9 @@ test("media discovery rejects a new top-frame document before navigation events 
     requestHeaders: []
   });
 
-  const result = await handoff;
-
-  assert.equal(result.accepted, false);
-  assert.equal(payload, null);
+  await result.discoveryDone;
+  assert.equal(result.accepted, true);
+  assert.equal(payloads.length, 1);
   assert.equal(vm.runInContext("activeMediaDiscoverySessions.size", fixture.context), 0);
   assert.equal(fixture.webRequestListeners.length, 0);
 });
@@ -4626,21 +4992,25 @@ test("media discovery does not reuse a pending session for a changed page URL", 
     fixture.context
   );
 
-  await clock.advance(8000);
   const results = await Promise.all([first, second]);
+  await clock.advance(8000);
+  await Promise.all(results.map(result => result.discoveryDone));
 
   assert.deepEqual(JSON.parse(JSON.stringify(results)), [
-    { accepted: false, ambiguous: false },
+    { accepted: true, ambiguous: false },
     { accepted: true, ambiguous: false }
   ]);
-  assert.deepEqual(payloads.map(payload => payload.urls[0]), ["https://example.com/new"]);
+  assert.deepEqual(payloads.map(payload => payload.urls[0]), [
+    "https://example.com/old",
+    "https://example.com/new"
+  ]);
 });
 
 test("media discovery cancels when another tab is activated in the same window", async () => {
   const clock = createFakeDiscoveryClock();
-  let payload = null;
+  const payloads = [];
   const fixture = createBackgroundContext(async (_path, _token, request) => {
-    payload = request.payload;
+    payloads.push(request.payload);
     return { ok: true };
   }, {
     Date: clock.Date,
@@ -4655,17 +5025,18 @@ test("media discovery cancels when another tab is activated in the same window",
   fixture.listeners.tabActivated({ tabId: 18, windowId: 4 });
 
   const result = await handoff;
+  await result.discoveryDone;
 
-  assert.equal(result.accepted, false);
-  assert.equal(payload, null);
+  assert.equal(result.accepted, true);
+  assert.equal(payloads.length, 1);
   assert.equal(fixture.webRequestListeners.length, 0);
 });
 
 test("media discovery cancels when focus moves to another window", async () => {
   const clock = createFakeDiscoveryClock();
-  let payload = null;
+  const payloads = [];
   const fixture = createBackgroundContext(async (_path, _token, request) => {
-    payload = request.payload;
+    payloads.push(request.payload);
     return { ok: true };
   }, {
     Date: clock.Date,
@@ -4680,9 +5051,10 @@ test("media discovery cancels when focus moves to another window", async () => {
   fixture.listeners.tabActivated({ tabId: 20, windowId: 5 });
 
   const result = await handoff;
+  await result.discoveryDone;
 
-  assert.equal(result.accepted, false);
-  assert.equal(payload, null);
+  assert.equal(result.accepted, true);
+  assert.equal(payloads.length, 1);
   assert.equal(fixture.webRequestListeners.length, 0);
 });
 
@@ -4781,6 +5153,42 @@ test("concurrent media actions for one tab share one complete handoff", async ()
   assert.equal(vm.runInContext("activeMediaFetchHandoffs.size", fixture.context), 0);
 });
 
+test("concurrent media pipeline calls do not replace the session keepalive or initial handoff", async () => {
+  const clock = createFakeDiscoveryClock();
+  let handoffCount = 0;
+  const fixture = createBackgroundContext(async () => {
+    handoffCount += 1;
+    return { ok: true };
+  }, {
+    Date: clock.Date,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout
+  });
+
+  const first = vm.runInContext(
+    'fetchMediaForTabInternal({ id: 13, url: "https://example.com/watch" }, { notifyOnFailure: false })',
+    fixture.context
+  );
+  const second = vm.runInContext(
+    'fetchMediaForTabInternal({ id: 13, url: "https://example.com/watch" }, { notifyOnFailure: false })',
+    fixture.context
+  );
+  const results = await Promise.all([first, second]);
+
+  assert.equal(handoffCount, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(results)), [
+    { accepted: true, ambiguous: false },
+    { accepted: true, ambiguous: false }
+  ]);
+  assert.equal(fixture.mediaDiscoveryPorts.length, 2);
+  assert.equal(fixture.mediaDiscoveryPorts[0].disconnected, false);
+  assert.equal(fixture.mediaDiscoveryPorts[1].disconnected, true);
+
+  await clock.advance(8000);
+  await Promise.all(results.map(result => result.discoveryDone));
+  assert.equal(fixture.mediaDiscoveryPorts[0].disconnected, true);
+});
+
 test("media discovery ignores requests from other tabs and bounds candidates", async () => {
   const clock = createFakeDiscoveryClock();
   let payload = null;
@@ -4816,7 +5224,8 @@ test("media discovery ignores requests from other tabs and bounds candidates", a
     64
   );
   await clock.advance(8000);
-  await handoff;
+  const result = await handoff;
+  await result.discoveryDone;
 
   assert.match(payload.urls[0], /segment-99\.mpd$/);
 });
@@ -4856,8 +5265,10 @@ test("media discovery bounds accepted frame identities", async () => {
     64
   );
   await clock.advance(8000);
-  await handoff;
-  assert.equal(payload.media, true);
+  const result = await handoff;
+  await result.discoveryDone;
+  assert.equal(payload.phase, "discovered");
+  assert.equal(payload.media_protocol_version, 7);
 });
 
 test("media discovery keeps the winning frame context attached to a duplicate URL", async () => {

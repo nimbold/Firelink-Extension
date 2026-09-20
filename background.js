@@ -12,7 +12,8 @@ const defaultSettings = {
 
 let cachedSettings = { ...defaultSettings };
 const LAUNCH_URL = "firelink://launch";
-const MEDIA_FETCH_PROTOCOL_VERSION = 4;
+const LEGACY_MEDIA_FETCH_PROTOCOL_VERSION = 4;
+const MEDIA_FETCH_PROTOCOL_VERSION = 7;
 const LAUNCH_TIMEOUT_MS = 15000;
 const LAUNCH_RETRY_MS = 500;
 const LAUNCH_TIMEOUTS_BEFORE_COOLDOWN = 2;
@@ -38,6 +39,9 @@ const MEDIA_DOCUMENT_IDENTITY_MESSAGE = "document-identity";
 const MEDIA_DOCUMENT_IDENTITY_ACK = "document-identity-ack";
 const MEDIA_DISCOVERY_KEEPALIVE_PORT = "firelink-media-discovery-v1";
 const MEDIA_DISCOVERY_SESSION_MS = 8000;
+const MEDIA_HANDOFF_ID_MAX_LENGTH = 128;
+const MEDIA_PHASE_INITIAL = "initial";
+const MEDIA_PHASE_DISCOVERED = "discovered";
 const MEDIA_DISCOVERY_MAX_CANDIDATES = 64;
 const MEDIA_DISCOVERY_MAX_DOCUMENTS = 64;
 const MEDIA_DISCOVERY_MAX_HEADERS = 4;
@@ -69,6 +73,7 @@ const mediaDiscoveryObserverRegistrations = new Map();
 const pendingMediaDocumentIdentityRequests = new Map();
 let mediaDiscoverySequence = 0;
 let mediaDiscoveryNonceSequence = 0;
+let mediaHandoffSequence = 0;
 const SETTINGS_KEYS = [
   "globalCapture",
   "siteToggles",
@@ -470,6 +475,19 @@ function mediaHeadersPayload(rawHeaders) {
     : undefined;
 }
 
+function legacyMediaPayload(payload) {
+  if (!payload || typeof payload !== "object") {
+    return payload;
+  }
+  const {
+    media_handoff_id: _mediaHandoffId,
+    media_phase: _mediaPhase,
+    media_protocol_version: _mediaProtocolVersion,
+    ...legacyPayload
+  } = payload;
+  return legacyPayload;
+}
+
 function normalizeObservedMediaReferer(rawReferer, fallback = "") {
   const normalize = value => {
     const normalizedURL = normalizePageMediaURL(value);
@@ -534,6 +552,29 @@ function mediaDiscoveryNonce(value) {
 function nextMediaDiscoveryNonce() {
   mediaDiscoveryNonceSequence += 1;
   return `${Date.now().toString(36)}-${mediaDiscoveryNonceSequence.toString(36)}`;
+}
+
+function normalizeMediaHandoffId(value) {
+  return typeof value === "string"
+    && /^[a-zA-Z0-9_-]{1,128}$/.test(value)
+    && value.length <= MEDIA_HANDOFF_ID_MAX_LENGTH
+    ? value
+    : null;
+}
+
+function nextMediaHandoffId() {
+  const bytes = new Uint8Array(16);
+  if (globalThis.crypto?.getRandomValues) {
+    globalThis.crypto.getRandomValues(bytes);
+    return `m-${Array.from(bytes)
+      .map(byte => byte.toString(16).padStart(2, "0"))
+      .join("")}`;
+  }
+
+  // Browser runtimes provide crypto.getRandomValues. This bounded fallback is
+  // only for restricted test/host environments where crypto is unavailable.
+  mediaHandoffSequence += 1;
+  return `m-${Date.now().toString(36)}-${mediaHandoffSequence.toString(36)}`;
 }
 
 function bindMediaDiscoveryDocument(session, documentId, frameId, windowId) {
@@ -709,6 +750,95 @@ function mergeMediaDiscoveryCandidate(session, candidate) {
   }
 }
 
+function completeMediaDiscoverySession(session) {
+  if (!session || session.completionSettled) {
+    return;
+  }
+  session.completionSettled = true;
+  releaseMediaDiscoveryKeepAlive(session.keepAlivePort);
+  session.keepAlivePort = null;
+  session.completeResolve?.();
+}
+
+async function sendMediaDiscoveryUpdate(session, candidate) {
+  if (!session
+    || session.invalidated
+    || session.updateStarted
+    || !session.initialAccepted
+    || session.twoPhaseMediaSupported === false
+    || !session.contentDocumentBound
+    || !mediaDiscoveryDocumentId(session.documentId)
+    || !candidate
+    || candidate.url === session.fallbackURL
+    || !normalizeMediaHandoffId(session.handoffId)) {
+    return false;
+  }
+
+  session.updateStarted = true;
+  let handoffTab;
+  try {
+    handoffTab = await revalidateMediaFetchTab(session.tab, session.documentId);
+  } catch (error) {
+    handoffTab = null;
+  }
+  if (!handoffTab || session.invalidated) {
+    return false;
+  }
+
+  let retryableFailure = false;
+  const sendUpdate = () => sendToFirelink([candidate.url], candidate.referer, {
+    // The initial page handoff already owns process launch. A late
+    // discovery update must never launch a second desktop instance after
+    // that handoff has expired or been invalidated.
+    allowProtocolFallback: false,
+    cookieStoreId: handoffTab.cookieStoreId,
+    incognito: handoffTab.incognito === true,
+    forwardCookies: false,
+    includeUserAgent: false,
+    mediaHeaders: candidate.headers,
+    media: true,
+    mediaHandoffId: session.handoffId,
+    mediaPhase: MEDIA_PHASE_DISCOVERED,
+    notifyOnFailure: false,
+    onHandoffError: error => {
+      retryableFailure = error?.serverReached === true && error?.status === 504;
+    }
+  });
+
+  try {
+    const accepted = await sendUpdate();
+    if (accepted || !retryableFailure || session.invalidated) {
+      return accepted;
+    }
+    // The native server marks an unacknowledged delivery retryable before
+    // returning 504. Its admission state makes this one replay safe: it is
+    // either a fresh attempt or a duplicate of an attempt that did finish.
+    retryableFailure = false;
+    return await sendUpdate();
+  } catch (error) {
+    // Any non-timeout failure remains intentionally single-shot. The native
+    // admission fence prevents an ambiguous response from being replayed.
+    return false;
+  }
+}
+
+function maybeCompleteMediaDiscoverySession(session) {
+  if (!session
+    || !session.closed
+    || !session.initialSettled
+    || session.completionStarted) {
+    return;
+  }
+
+  session.completionStarted = true;
+  const updatePromise = session.initialAccepted
+    && session.selectedCandidate
+    && !session.invalidated
+    ? sendMediaDiscoveryUpdate(session, session.selectedCandidate)
+    : Promise.resolve(false);
+  void updatePromise.finally(() => completeMediaDiscoverySession(session));
+}
+
 function finishMediaDiscoverySession(session) {
   if (!session || session.closed) {
     return;
@@ -725,6 +855,7 @@ function finishMediaDiscoverySession(session) {
 
   const candidate = Array.from(session.candidates.values())
     .sort(compareMediaDiscoveryCandidates)[0];
+  session.selectedCandidate = candidate || null;
   session.resolve(candidate
     ? {
       url: candidate.url,
@@ -740,6 +871,21 @@ function finishMediaDiscoverySession(session) {
       documentId: session.documentId,
       invalidated: session.invalidated === true
     });
+  maybeCompleteMediaDiscoverySession(session);
+}
+
+function settleMediaDiscoveryInitialHandoff(session, accepted, ambiguous = false) {
+  if (!session || session.initialSettled) {
+    return;
+  }
+  session.initialSettled = true;
+  session.initialAccepted = accepted === true;
+  session.initialHandoffResolve?.({
+    accepted: session.initialAccepted,
+    ambiguous: ambiguous === true
+  });
+  session.initialHandoffResolve = null;
+  maybeCompleteMediaDiscoverySession(session);
 }
 
 function cancelMediaDiscoverySession(session) {
@@ -795,6 +941,7 @@ function observeMediaRequest(details) {
       return;
     }
     session.documentId ||= documentId;
+    session.contentDocumentBound = true;
     session.documentIds.add(documentId);
   } else {
     if (frameId === null || !session.documentId || !session.documentIds.has(session.documentId)) {
@@ -896,18 +1043,52 @@ function startMediaDiscoverySession(options = {}) {
   const tabId = mediaDiscoveryTabId(options.tabId);
   const fallbackURL = normalizePageMediaURL(options.fallbackURL);
   if (tabId === null || !fallbackURL) {
-    return Promise.resolve({
+    const fallbackTarget = {
       url: fallbackURL,
       referer: normalizeObservedMediaReferer(options.fallbackReferer, fallbackURL),
       headers: []
-    });
+    };
+    return {
+      tabId,
+      windowId: mediaDiscoveryWindowId(options.windowId),
+      tab: options.tab || null,
+      handoffId: normalizeMediaHandoffId(options.handoffId),
+      fallbackURL,
+      fallbackReferer: fallbackTarget.referer || fallbackURL || "",
+      startedAt: Date.now(),
+      expiresAt: Date.now(),
+      identityNonce: null,
+      documentId: null,
+      contentDocumentBound: false,
+      documentIds: new Set(),
+      pendingSnapshotURLs: [],
+      candidates: new Map(),
+      closed: true,
+      invalidated: false,
+      timer: null,
+      resolve: null,
+      promise: Promise.resolve(fallbackTarget),
+      completeResolve: null,
+      donePromise: Promise.resolve(),
+      initialSettled: true,
+      initialAccepted: false,
+      selectedCandidate: null,
+      updateStarted: false,
+      completionStarted: true,
+      completionSettled: true,
+      twoPhaseMediaSupported: false,
+      initialHandoffStarted: true,
+      initialHandoffPromise: Promise.resolve({ accepted: false, ambiguous: false }),
+      initialHandoffResolve: null,
+      keepAlivePort: null
+    };
   }
 
   const existing = activeMediaDiscoverySessions.get(tabId);
   if (existing && !existing.closed) {
     const requestedWindowId = mediaDiscoveryWindowId(options.windowId);
     if (existing.windowId === requestedWindowId && existing.fallbackURL === fallbackURL) {
-      return existing.promise;
+      return existing;
     }
     // A delayed tabs.onUpdated notification must not let a new Fetch media
     // action reuse a session belonging to a different page in the same tab.
@@ -919,6 +1100,8 @@ function startMediaDiscoverySession(options = {}) {
   const session = {
     tabId,
     windowId: mediaDiscoveryWindowId(options.windowId),
+    tab: options.tab || { id: tabId, windowId: options.windowId, url: fallbackURL },
+    handoffId: normalizeMediaHandoffId(options.handoffId),
     fallbackURL,
     fallbackReferer: canonicalURL || fallbackURL,
     startedAt,
@@ -933,10 +1116,29 @@ function startMediaDiscoverySession(options = {}) {
     invalidated: false,
     timer: null,
     resolve: null,
-    promise: null
+    promise: null,
+    completeResolve: null,
+    donePromise: null,
+    initialSettled: false,
+    initialAccepted: false,
+    selectedCandidate: null,
+    updateStarted: false,
+    completionStarted: false,
+    completionSettled: false,
+    twoPhaseMediaSupported: true,
+    initialHandoffStarted: false,
+    initialHandoffPromise: null,
+    initialHandoffResolve: null,
+    keepAlivePort: options.keepAlivePort || null
   };
   session.promise = new Promise(resolve => {
     session.resolve = resolve;
+  });
+  session.donePromise = new Promise(resolve => {
+    session.completeResolve = resolve;
+  });
+  session.initialHandoffPromise = new Promise(resolve => {
+    session.initialHandoffResolve = resolve;
   });
   activeMediaDiscoverySessions.set(tabId, session);
   installMediaDiscoveryObserver(session);
@@ -965,7 +1167,7 @@ function startMediaDiscoverySession(options = {}) {
     // usable without retrying or injecting code.
   });
 
-  return session.promise;
+  return session;
 }
 
 function installMediaDiscoveryObserver(session) {
@@ -1733,15 +1935,43 @@ async function waitForFirelink(token, deadline) {
 }
 
 async function deliverAfterStartup(entry, deadline) {
+  let attemptedLegacyMediaFallback = false;
+  let deliveryPath = entry.path || "/download";
+  let deliveryPayload = entry.payload;
+  let deliveryRequiredProtocolVersion = entry.requiredProtocolVersion;
+  let usingLegacyMediaFallback = false;
   while (Date.now() < deadline) {
     try {
-      await FirelinkProtocol.signedFetch("/download", entry.token, {
+      await FirelinkProtocol.signedFetch(deliveryPath, entry.token, {
         method: "POST",
-        payload: entry.payload,
-        requiredProtocolVersion: entry.requiredProtocolVersion
+        payload: deliveryPayload,
+        requiredProtocolVersion: deliveryRequiredProtocolVersion
       });
+      if (usingLegacyMediaFallback) {
+        try {
+          entry.onLegacyMediaFallback?.(true);
+        } catch (callbackError) {
+          // A capability note must not turn a successful legacy handoff
+          // into an apparent transport failure.
+        }
+      }
       return true;
     } catch (error) {
+      const canUseLegacyMediaFallback = !attemptedLegacyMediaFallback
+        && entry.legacyPayload
+        && entry.legacyRequiredProtocolVersion
+        && error?.serverReached === true
+        && error?.status === 426
+        && error?.code === "protocol-version"
+        && !handoffMayHaveBeenSent(error);
+      if (canUseLegacyMediaFallback) {
+        attemptedLegacyMediaFallback = true;
+        deliveryPath = entry.legacyPath || "/download";
+        deliveryPayload = entry.legacyPayload;
+        deliveryRequiredProtocolVersion = entry.legacyRequiredProtocolVersion;
+        usingLegacyMediaFallback = true;
+        continue;
+      }
       if (error?.status === 503 && error?.serverReached) {
         await delay(LAUNCH_RETRY_MS);
         continue;
@@ -1758,6 +1988,13 @@ function enqueueLaunchDelivery(token, payload, requiredProtocolVersion, options 
       token,
       payload: Object.freeze({ ...payload, urls: Object.freeze([...payload.urls]) }),
       requiredProtocolVersion,
+      path: options.path || "/download",
+      legacyPath: options.legacyPath || "/download",
+      legacyPayload: options.legacyPayload
+        ? Object.freeze({ ...options.legacyPayload, urls: Object.freeze([...options.legacyPayload.urls]) })
+        : null,
+      legacyRequiredProtocolVersion: options.legacyRequiredProtocolVersion,
+      onLegacyMediaFallback: options.onLegacyMediaFallback,
       deadline: Date.now() + LAUNCH_TIMEOUT_MS,
       onRequestMayHaveBeenSent: options.onRequestMayHaveBeenSent,
       resolve
@@ -2105,6 +2342,26 @@ async function sendToFirelink(urls, referer = "", options = {}) {
   const notifyOnFailure = options.notifyOnFailure !== false;
   const allowProtocolFallback = options.allowProtocolFallback !== false;
   const normalizedURLs = normalizeURLList(urls);
+  const mediaHandoffId = options.media === true
+    ? normalizeMediaHandoffId(options.mediaHandoffId)
+    : null;
+  const mediaPhase = options.media === true
+    && (options.mediaPhase === MEDIA_PHASE_INITIAL
+      || options.mediaPhase === MEDIA_PHASE_DISCOVERED)
+    ? options.mediaPhase
+    : null;
+  const hasVersionedMediaHandoff = options.media === true
+    && mediaHandoffId !== null
+    && mediaPhase !== null;
+  const isMediaDiscoveryUpdate = hasVersionedMediaHandoff
+    && mediaPhase === MEDIA_PHASE_DISCOVERED;
+  if (options.media === true
+    && ((options.mediaHandoffId !== undefined && mediaHandoffId === null)
+      || (options.mediaPhase !== undefined && mediaPhase === null)
+      || (mediaHandoffId !== null && mediaPhase === null)
+      || (mediaHandoffId === null && mediaPhase !== null))) {
+    return false;
+  }
   const hasTorrentBytes = options.torrentBytesBase64 !== undefined
     && options.torrentBytesBase64 !== null;
   if (hasTorrentBytes && !isValidTorrentBytesPayload(options.torrentBytesBase64)) {
@@ -2155,23 +2412,37 @@ async function sendToFirelink(urls, referer = "", options = {}) {
   const mediaHeaders = options.media === true
     ? mediaHeadersPayload(options.mediaHeaders)
     : undefined;
-  const payload = {
-    urls: normalizedURLs,
-    referer,
-    silent: captureMode === "automatic",
-    filename: options.filename,
-    headers: options.media === true
-      ? mediaHeaders
-      : options.includeUserAgent === false
-      || typeof navigator === "undefined"
-      || typeof navigator.userAgent !== "string"
-      ? undefined
-      : `User-Agent: ${navigator.userAgent}`,
-    cookies: cookieString || undefined,
-    cookie_scopes: cookieScopes.length > 0 ? cookieScopes : undefined,
-    media: options.media === true,
-    torrent_bytes_base64: hasTorrentBytes ? options.torrentBytesBase64 : undefined
-  };
+  let payload = isMediaDiscoveryUpdate
+    ? {
+      handoff_id: mediaHandoffId,
+      phase: mediaPhase,
+      media_protocol_version: MEDIA_FETCH_PROTOCOL_VERSION,
+      urls: normalizedURLs,
+      referer,
+      headers: mediaHeaders
+    }
+    : {
+      urls: normalizedURLs,
+      referer,
+      silent: captureMode === "automatic",
+      filename: options.filename,
+      headers: options.media === true
+        ? mediaHeaders
+        : options.includeUserAgent === false
+        || typeof navigator === "undefined"
+        || typeof navigator.userAgent !== "string"
+        ? undefined
+        : `User-Agent: ${navigator.userAgent}`,
+      cookies: cookieString || undefined,
+      cookie_scopes: cookieScopes.length > 0 ? cookieScopes : undefined,
+      media: options.media === true,
+      media_handoff_id: hasVersionedMediaHandoff ? mediaHandoffId : undefined,
+      media_phase: hasVersionedMediaHandoff ? mediaPhase : undefined,
+      media_protocol_version: hasVersionedMediaHandoff
+        ? MEDIA_FETCH_PROTOCOL_VERSION
+        : undefined,
+      torrent_bytes_base64: hasTorrentBytes ? options.torrentBytesBase64 : undefined
+    };
   if (isTorrent) {
     payload.torrent = true;
   }
@@ -2182,22 +2453,73 @@ async function sendToFirelink(urls, referer = "", options = {}) {
     }
   }
 
-  const requiredProtocolVersion = options.media === true
-    ? MEDIA_FETCH_PROTOCOL_VERSION
+  let requiredProtocolVersion = options.media === true
+    ? hasVersionedMediaHandoff
+      ? MEDIA_FETCH_PROTOCOL_VERSION
+      : LEGACY_MEDIA_FETCH_PROTOCOL_VERSION
     : hasTorrentBytes
     ? TORRENT_BINARY_CAPTURE_PROTOCOL_VERSION
     : (isTorrent || containsTorrentURL || options.torrent === true)
     ? TORRENT_CAPTURE_PROTOCOL_VERSION
     : captureMode === "automatic" ? 3 : undefined;
+  const handoffPath = isMediaDiscoveryUpdate ? "/media-discovery" : "/download";
+  const legacyMediaFallbackAllowed = options.allowLegacyMediaFallback !== false
+    && options.media === true
+    && !isMediaDiscoveryUpdate
+    && mediaPhase === MEDIA_PHASE_INITIAL
+    && hasVersionedMediaHandoff;
 
+  let attemptedLegacyMediaFallback = false;
   try {
-    await FirelinkProtocol.signedFetch("/download", cachedSettings.extensionToken, {
+    await FirelinkProtocol.signedFetch(
+      handoffPath,
+      cachedSettings.extensionToken,
+      {
       method: "POST",
       payload,
       requiredProtocolVersion
-    });
+      }
+    );
     return true;
   } catch (error) {
+    const canUseLegacyMediaFallback = !attemptedLegacyMediaFallback
+      && legacyMediaFallbackAllowed
+      && error?.serverReached === true
+      && error?.status === 426
+      && error?.code === "protocol-version"
+      && !handoffMayHaveBeenSent(error);
+    if (canUseLegacyMediaFallback) {
+      attemptedLegacyMediaFallback = true;
+      payload = legacyMediaPayload(payload);
+      requiredProtocolVersion = LEGACY_MEDIA_FETCH_PROTOCOL_VERSION;
+      try {
+        await FirelinkProtocol.signedFetch(
+          "/download",
+          cachedSettings.extensionToken,
+          {
+            method: "POST",
+            payload,
+            requiredProtocolVersion
+          }
+        );
+        try {
+          options.onLegacyMediaFallback?.(true);
+        } catch (callbackError) {
+          // A caller-side capability note must never turn a successful
+          // legacy handoff into an apparent transport failure.
+        }
+        return true;
+      } catch (fallbackError) {
+        error = fallbackError;
+      }
+    }
+
+    try {
+      options.onHandoffError?.(error);
+    } catch (callbackError) {
+      // Error observers must not alter the handoff result.
+    }
+
     if (error?.serverReached && error?.status === 426) {
       const requestMayHaveBeenSent = handoffMayHaveBeenSent(error);
       reportAmbiguousHandoff(options, error);
@@ -2241,7 +2563,12 @@ async function sendToFirelink(urls, referer = "", options = {}) {
     if (error?.serverReached && error?.status === 503) {
       try {
         return await deliverAfterStartup(
-          { token: cachedSettings.extensionToken, payload, requiredProtocolVersion },
+          {
+            token: cachedSettings.extensionToken,
+            payload,
+            requiredProtocolVersion,
+            path: handoffPath
+          },
           Date.now() + LAUNCH_TIMEOUT_MS
         );
       } catch (retryError) {
@@ -2287,7 +2614,15 @@ async function sendToFirelink(urls, referer = "", options = {}) {
         cachedSettings.extensionToken,
         payload,
         requiredProtocolVersion,
-        options
+        {
+          ...options,
+          path: handoffPath,
+          legacyPath: legacyMediaFallbackAllowed ? "/download" : undefined,
+          legacyPayload: legacyMediaFallbackAllowed ? legacyMediaPayload(payload) : undefined,
+          legacyRequiredProtocolVersion: legacyMediaFallbackAllowed
+            ? LEGACY_MEDIA_FETCH_PROTOCOL_VERSION
+            : undefined
+        }
       );
     }
 
@@ -2859,42 +3194,67 @@ async function recoverPendingCaptures() {
   return pendingCaptureRecovery;
 }
 
-async function resolveMediaFetchTarget(tab, requestedURL, options = {}) {
+function resolveMediaFetchTarget(tab, requestedURL, options = {}) {
+  const handoffId = nextMediaHandoffId();
   const directManifestURL = normalizeMediaManifestURL(requestedURL);
   const canonicalPageURL = normalizePageMediaURL(tab?.url);
   if (options.preferSrcUrl === true) {
     // A context-menu link is an explicit user-selected source. Discovery of
     // the active tab must not replace it with an unrelated player manifest.
     return {
-      url: requestedURL,
-      referer: normalizeObservedMediaReferer(canonicalPageURL, requestedURL),
-      headers: []
+      handoffId,
+      session: null,
+      target: {
+        url: requestedURL,
+        referer: normalizeObservedMediaReferer(canonicalPageURL, requestedURL),
+        headers: []
+      }
     };
   }
   if (directManifestURL) {
     return {
-      url: directManifestURL,
-      referer: normalizeObservedMediaReferer(canonicalPageURL, directManifestURL),
-      headers: []
+      handoffId,
+      session: null,
+      target: {
+        url: directManifestURL,
+        referer: normalizeObservedMediaReferer(canonicalPageURL, directManifestURL),
+        headers: []
+      }
     };
   }
 
   const tabId = mediaDiscoveryTabId(tab?.id);
   if (tabId === null) {
     return {
-      url: requestedURL,
-      referer: normalizeObservedMediaReferer(requestedURL),
-      headers: []
+      handoffId,
+      session: null,
+      target: {
+        url: requestedURL,
+        referer: normalizeObservedMediaReferer(requestedURL),
+        headers: []
+      }
     };
   }
 
-  return startMediaDiscoverySession({
+  const session = startMediaDiscoverySession({
     tabId,
     windowId: mediaDiscoveryWindowId(tab?.windowId),
+    tab,
+    handoffId,
+    keepAlivePort: options._mediaDiscoveryKeepAlivePort,
     canonicalURL: canonicalPageURL,
     fallbackURL: requestedURL,
     fallbackReferer: canonicalPageURL || requestedURL
   });
+  return {
+    handoffId: session.handoffId || handoffId,
+    session,
+    target: {
+      url: requestedURL,
+      referer: canonicalPageURL || requestedURL,
+      headers: []
+    }
+  };
 }
 
 function mediaFetchRequestKey(tab, options = {}) {
@@ -2928,7 +3288,13 @@ function fetchMediaForTab(tab, options = {}) {
       activeMediaFetchHandoffs.delete(requestKey);
     }
   };
-  void promise.then(clear, clear);
+  void promise.then(result => {
+    if (result?.discoveryDone?.then) {
+      void result.discoveryDone.then(clear, clear);
+      return;
+    }
+    clear();
+  }, clear);
   return promise;
 }
 
@@ -3010,10 +3376,17 @@ async function fetchMediaForTabInternal(tab, options = {}) {
   // bounded port to the originating content script for every media fetch so
   // an MV3 service worker cannot be suspended during discovery or handoff.
   const keepAlivePort = connectMediaDiscoveryKeepAlive(tab?.id);
+  const handoffState = { keepAliveTransferred: false };
   try {
-    return await performMediaFetchForTab(tab, options);
+    return await performMediaFetchForTab(tab, {
+      ...options,
+      _mediaDiscoveryKeepAlivePort: keepAlivePort,
+      _mediaHandoffState: handoffState
+    });
   } finally {
-    releaseMediaDiscoveryKeepAlive(keepAlivePort);
+    if (!handoffState.keepAliveTransferred) {
+      releaseMediaDiscoveryKeepAlive(keepAlivePort);
+    }
   }
 }
 
@@ -3035,30 +3408,73 @@ async function performMediaFetchForTab(tab, options = {}) {
     return { accepted: false, ambiguous: false };
   }
 
-  let mediaTarget;
+  let mediaResolution;
   try {
-    mediaTarget = await resolveMediaFetchTarget(tab, pageURL, options);
+    mediaResolution = resolveMediaFetchTarget(tab, pageURL, options);
   } catch (error) {
     // Discovery is an optional source of request context. A failed content
     // snapshot or observer must not prevent the existing page handoff.
-    mediaTarget = {
-      url: pageURL,
-      referer: pageURL,
-      headers: []
+    mediaResolution = {
+      handoffId: nextMediaHandoffId(),
+      session: null,
+      target: {
+        url: pageURL,
+        referer: pageURL,
+        headers: []
+      }
     };
   }
 
-  if (mediaTarget.invalidated === true) {
+  const mediaTarget = mediaResolution.target;
+  const discoverySession = mediaResolution.session;
+  if (discoverySession?.invalidated === true) {
+    settleMediaDiscoveryInitialHandoff(discoverySession, false);
     return { accepted: false, ambiguous: false };
+  }
+  if (discoverySession && !discoverySession.closed) {
+    if (discoverySession.initialHandoffStarted) {
+      const sharedResult = await discoverySession.initialHandoffPromise;
+      const result = {
+        accepted: sharedResult.accepted === true,
+        ambiguous: sharedResult.ambiguous === true
+      };
+      Object.defineProperty(result, "discoveryDone", {
+        value: discoverySession.donePromise,
+        enumerable: false
+      });
+      return result;
+    }
+    discoverySession.initialHandoffStarted = true;
+    const incomingKeepAlivePort = options._mediaDiscoveryKeepAlivePort || null;
+    // A request for the same page can already be sharing an active session.
+    // Keep the original owner of its port; otherwise the newer caller would
+    // overwrite a live reference that the first caller's finally block no
+    // longer releases.
+    const canAdoptKeepAlive = !discoverySession.keepAlivePort
+      || discoverySession.keepAlivePort === incomingKeepAlivePort;
+    if (canAdoptKeepAlive) {
+      discoverySession.keepAlivePort = incomingKeepAlivePort;
+    }
+    if (canAdoptKeepAlive && options._mediaHandoffState) {
+      options._mediaHandoffState.keepAliveTransferred = true;
+    }
   }
 
   let handoffTab;
   try {
-    handoffTab = await revalidateMediaFetchTab(tab, mediaTarget.documentId);
+    // The initial page handoff is intentionally not gated on the eventual
+    // document identity. Discovery will bind and revalidate that identity
+    // before sending a discovered manifest update.
+    handoffTab = await revalidateMediaFetchTab(tab, null);
   } catch (error) {
     handoffTab = null;
   }
   if (!handoffTab) {
+    if (discoverySession && !discoverySession.closed) {
+      discoverySession.invalidated = true;
+      finishMediaDiscoverySession(discoverySession);
+    }
+    settleMediaDiscoveryInitialHandoff(discoverySession, false);
     return { accepted: false, ambiguous: false };
   }
 
@@ -3075,6 +3491,17 @@ async function performMediaFetchForTab(tab, options = {}) {
       includeUserAgent: false,
       mediaHeaders: mediaTarget.headers,
       media: true,
+      mediaHandoffId: mediaResolution.handoffId,
+      mediaPhase: MEDIA_PHASE_INITIAL,
+      onLegacyMediaFallback: used => {
+        if (used && discoverySession) {
+          discoverySession.twoPhaseMediaSupported = false;
+          // A legacy desktop cannot consume the discovered phase. End the
+          // browser observer immediately instead of holding the service
+          // worker and keepalive port for the full discovery window.
+          finishMediaDiscoverySession(discoverySession);
+        }
+      },
       notifyOnFailure: options.notifyOnFailure !== false,
       onRequestMayHaveBeenSent: () => {
         requestMayHaveBeenSent = true;
@@ -3097,6 +3524,18 @@ async function performMediaFetchForTab(tab, options = {}) {
     }
   }
 
+  if (discoverySession) {
+    settleMediaDiscoveryInitialHandoff(
+      discoverySession,
+      accepted,
+      requestMayHaveBeenSent && !accepted
+    );
+    if (!accepted && !discoverySession.closed) {
+      discoverySession.invalidated = true;
+      finishMediaDiscoverySession(discoverySession);
+    }
+  }
+
   if (accepted && options.notifyOnSuccess === true) {
     notify(
       backgroundText("notifications", "mediaTitle", "Firelink Media Fetch"),
@@ -3104,10 +3543,17 @@ async function performMediaFetchForTab(tab, options = {}) {
     );
   }
 
-  return {
+  const result = {
     accepted,
     ambiguous: requestMayHaveBeenSent && !accepted
   };
+  if (discoverySession) {
+    Object.defineProperty(result, "discoveryDone", {
+      value: discoverySession.donePromise,
+      enumerable: false
+    });
+  }
+  return result;
 }
 
 async function openAutomaticMagnetFallback(url, sender, openInNewTab = false) {

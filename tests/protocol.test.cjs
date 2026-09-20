@@ -153,6 +153,41 @@ test("rejects a protocol 4 desktop before sending a torrent handoff", async () =
       error => {
         assert.equal(error.status, 426);
         assert.equal(error.serverReached, true);
+        assert.equal(error.code, "protocol-version");
+        return true;
+      }
+    );
+    assert.equal(downloadRequests, 0);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("rejects an older desktop before sending a versioned media handoff", async () => {
+  const originalFetch = global.fetch;
+  const { signedFetch } = loadProtocol();
+  let downloadRequests = 0;
+
+  global.fetch = async (url, options = {}) => {
+    if (url.endsWith("/download")) downloadRequests += 1;
+    return firelinkResponseForRequest(url, options, { protocolVersion: 6 });
+  };
+
+  try {
+    await assert.rejects(
+      () => signedFetch("/download", "secret", {
+        method: "POST",
+        requiredProtocolVersion: 7,
+        payload: {
+          urls: ["https://example.com/watch"],
+          media: true,
+          media_handoff_id: "m-123",
+          media_phase: "initial"
+        }
+      }),
+      error => {
+        assert.equal(error.status, 426);
+        assert.equal(error.serverReached, true);
         return true;
       }
     );
@@ -639,6 +674,45 @@ test("rejects a post-discovery response without a bound server proof", async () 
         assert.ok(error instanceof FirelinkRequestError);
         assert.equal(error.status, 426);
         assert.equal(error.serverReached, true);
+        return true;
+      }
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("marks an unauthenticated media-discovery response as possibly admitted", async () => {
+  const originalFetch = global.fetch;
+  const { FirelinkRequestError, signedFetch } = loadProtocol();
+
+  global.fetch = async (url, options = {}) => {
+    if (url.endsWith("/ping")) return firelinkResponseForRequest(url, options, { protocolVersion: 7 });
+    return new Response(null, {
+      status: 200,
+      headers: {
+        "X-Firelink-Server": "1",
+        "X-Firelink-Protocol-Version": "7"
+      }
+    });
+  };
+
+  try {
+    await assert.rejects(
+      () => signedFetch("/media-discovery", "secret", {
+        method: "POST",
+        requiredProtocolVersion: 7,
+        payload: {
+          handoff_id: "m-123",
+          phase: "discovered",
+          urls: ["https://cdn.example/master.m3u8"]
+        }
+      }),
+      error => {
+        assert.ok(error instanceof FirelinkRequestError);
+        assert.equal(error.status, 426);
+        assert.equal(error.serverReached, true);
+        assert.equal(error.requestMayHaveBeenSent, true);
         return true;
       }
     );
