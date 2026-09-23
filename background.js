@@ -399,7 +399,7 @@ function mediaManifestKind(rawURL) {
     const pathname = url.pathname.toLowerCase();
     if (pathname.endsWith(".m3u8")) return "m3u8";
     if (pathname.endsWith(".mpd")) return "mpd";
-    if (pathname.endsWith(".ism/manifest")) return "ism/manifest";
+    if (/\.ism\/manifest(?:\([^/]*\))?$/.test(pathname)) return "ism/manifest";
     if (pathname.endsWith(".ism")) return "ism";
     return null;
   } catch (error) {

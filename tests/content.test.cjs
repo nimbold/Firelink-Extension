@@ -9,7 +9,7 @@ const contentSource = fs.readFileSync(
 );
 
 test("content media snapshot returns only bounded HTTP manifest resources", () => {
-  let listener;
+  const listeners = [];
   let documentPort;
   const documentPortMessages = [];
   const mediaElement = {
@@ -35,14 +35,15 @@ test("content media snapshot returns only bounded HTTP manifest resources", () =
           { name: "https://cdn.example/master.M3U8?token=two#fragment" },
           { name: "https://cdn.example/segment.ts" },
           { name: "data:text/plain,https://cdn.example/fake.m3u8" },
-          { name: "https://cdn.example/manifest.ism/manifest" }
+          { name: "https://cdn.example/manifest.ism/manifest" },
+          { name: "https://cdn.example/asset.ism/manifest(format=m3u8-aapl,filter=public)" }
         ];
       }
     },
     chrome: {
       runtime: {
         onMessage: {
-          addListener(value) { listener = value; }
+          addListener(value) { listeners.push(value); }
         },
         connect(details) {
           documentPort = {
@@ -60,16 +61,19 @@ test("content media snapshot returns only bounded HTTP manifest resources", () =
 
   vm.runInContext(contentSource, context);
   let response;
-  listener(
-    { action: "collectMediaSnapshotV1", nonce: "nonce-1" },
-    {},
-    value => { response = value; }
-  );
+  for (const listener of listeners) {
+    listener(
+      { action: "collectMediaSnapshotV1", nonce: "nonce-1" },
+      {},
+      value => { response = value; }
+    );
+  }
 
   assert.deepEqual(JSON.parse(JSON.stringify(response)), {
     urls: [
       "https://cdn.example/master.M3U8?token=two#fragment",
       "https://cdn.example/manifest.ism/manifest",
+      "https://cdn.example/asset.ism/manifest(format=m3u8-aapl,filter=public)",
       "https://cdn.example/from-element.mpd?token=one"
     ]
   });
@@ -77,6 +81,52 @@ test("content media snapshot returns only bounded HTTP manifest resources", () =
   assert.deepEqual(JSON.parse(JSON.stringify(documentPortMessages)), [
     { type: "document-identity", nonce: "nonce-1" }
   ]);
+});
+
+test("content media snapshot listener installs when the selection listener was already initialized", () => {
+  const listeners = [];
+  const context = vm.createContext({
+    URL,
+    firelinkSelectionLinkHandlerV2Installed: true,
+    document: {
+      baseURI: "https://example.com/watch",
+      addEventListener() {},
+      querySelectorAll() { return []; }
+    },
+    performance: {
+      getEntriesByType() {
+        return [{ name: "https://cdn.example/reinjected.m3u8" }];
+      }
+    },
+    chrome: {
+      runtime: {
+        onMessage: {
+          addListener(listener) { listeners.push(listener); }
+        },
+        connect() {
+          return {
+            postMessage() {},
+            disconnect() {},
+            onMessage: { addListener() {} },
+            onDisconnect: { addListener() {} }
+          };
+        }
+      }
+    }
+  });
+
+  vm.runInContext(contentSource, context);
+  assert.equal(listeners.length, 1);
+
+  let response;
+  listeners[0](
+    { action: "collectMediaSnapshotV1", nonce: "nonce-reinjected" },
+    {},
+    value => { response = value; }
+  );
+  assert.deepEqual(JSON.parse(JSON.stringify(response)), {
+    urls: ["https://cdn.example/reinjected.m3u8"]
+  });
 });
 
 test("content accepts the bounded media discovery keepalive and stops it on disconnect", () => {

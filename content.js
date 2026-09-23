@@ -43,7 +43,7 @@
       const pathname = url.pathname.toLowerCase();
       if (pathname.endsWith(".m3u8")) return "m3u8";
       if (pathname.endsWith(".mpd")) return "mpd";
-      if (pathname.endsWith(".ism/manifest")) return "ism/manifest";
+      if (/\.ism\/manifest(?:\([^/]*\))?$/.test(pathname)) return "ism/manifest";
       if (pathname.endsWith(".ism")) return "ism";
       return null;
     } catch (error) {
@@ -779,6 +779,21 @@
     document.addEventListener("contextmenu", storeSelectionSnapshot, true);
   }
 
+  // Keep media discovery independent of the selection-listener guard. The
+  // content script can be re-injected into a live tab after an extension
+  // update, where the older selection guard is already set in that frame.
+  if (!globalThis.firelinkMediaSnapshotHandlerV1Installed) {
+    globalThis.firelinkMediaSnapshotHandlerV1Installed = true;
+    chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+      if (request?.action !== mediaSnapshotMessageAction) {
+        return false;
+      }
+      sendMediaDocumentIdentity(request?.nonce);
+      sendResponse(collectMediaSnapshot());
+      return false;
+    });
+  }
+
   // A versioned action prevents an updated background script from accepting a
   // response from an older content script that is still alive in an open tab.
   const legacySelectionLinkHandlerAlreadyInstalled = Boolean(
@@ -787,12 +802,6 @@
   if (!globalThis.firelinkSelectionLinkHandlerV2Installed) {
     globalThis.firelinkSelectionLinkHandlerV2Installed = true;
     chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-      if (request?.action === mediaSnapshotMessageAction) {
-        sendMediaDocumentIdentity(request?.nonce);
-        sendResponse(collectMediaSnapshot());
-        return false;
-      }
-
       const isLegacyAction = request?.action === "extractSelectionLinks";
       if (request?.action !== "extractSelectionLinksV2"
         && (legacySelectionLinkHandlerAlreadyInstalled || !isLegacyAction)) {
