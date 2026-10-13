@@ -70,7 +70,7 @@ test("keeps the privacy and screenshot handoff materials linked", () => {
   );
 });
 
-test("keeps the manual release version aligned with the package", () => {
+test("requires a matching version tag before release publication", () => {
   const packageVersion = JSON.parse(
     fs.readFileSync(path.join(rootDir, "package.json"), "utf8")
   ).version;
@@ -83,5 +83,11 @@ test("keeps the manual release version aligned with the package", () => {
   );
 
   assert.equal(manifestVersion, packageVersion);
-  assert.match(releaseWorkflow, new RegExp(`^\\s+default: "${packageVersion}"$`, "m"));
+  assert.match(releaseWorkflow, /workflow_dispatch: \{\}/);
+  assert.match(
+    releaseWorkflow,
+    /Verify release ref and package identity[\s\S]*?node scripts\/verify-release-ref\.js/
+  );
+  assert.doesNotMatch(releaseWorkflow, /inputs:\s*\n\s+version:/);
+  assert.match(releaseWorkflow, /TAG_NAME="\$GITHUB_REF_NAME"/);
 });

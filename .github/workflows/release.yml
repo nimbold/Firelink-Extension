@@ -4,12 +4,7 @@ on:
   push:
     tags:
       - 'v*'
-  workflow_dispatch:
-    inputs:
-      version:
-        description: "Release version, for example 2.2.2"
-        required: true
-        default: "2.2.2"
+  workflow_dispatch: {}
 
 jobs:
   release:
@@ -19,6 +14,9 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v7
+
+      - name: Verify release ref and package identity
+        run: node scripts/verify-release-ref.js
 
       - name: Verify extension packages
         run: npm run check
@@ -32,21 +30,9 @@ jobs:
       - name: Resolve version
         id: version
         shell: bash
-        env:
-          REQUESTED_VERSION: ${{ inputs.version }}
         run: |
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            VERSION="${GITHUB_REF_NAME#v}"
-            TAG_NAME="${GITHUB_REF_NAME}"
-          else
-            VERSION="$REQUESTED_VERSION"
-            TAG_NAME="v${VERSION}"
-          fi
-
-          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Release version must be a stable semantic version: $VERSION" >&2
-            exit 1
-          fi
+          VERSION="${GITHUB_REF_NAME#v}"
+          TAG_NAME="$GITHUB_REF_NAME"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
 
