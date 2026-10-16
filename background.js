@@ -46,12 +46,6 @@ const MEDIA_DISCOVERY_MAX_CANDIDATES = 64;
 const MEDIA_DISCOVERY_MAX_DOCUMENTS = 64;
 const MEDIA_DISCOVERY_MAX_HEADERS = 4;
 const MEDIA_DISCOVERY_MAX_HEADER_VALUE_LENGTH = 2048;
-const MEDIA_DISCOVERY_MANIFEST_KIND_RANK = Object.freeze({
-  m3u8: 0,
-  mpd: 1,
-  "ism/manifest": 2,
-  ism: 3
-});
 const MEDIA_DISCOVERY_SAFE_HEADER_NAMES = Object.freeze({
   accept: "Accept",
   "accept-language": "Accept-Language",
@@ -689,18 +683,11 @@ function createMediaDiscoveryCandidate(rawURL, options = {}) {
 }
 
 function compareMediaDiscoveryCandidates(left, right) {
-  const leftFrameRank = left.topFrame ? 0 : 1;
-  const rightFrameRank = right.topFrame ? 0 : 1;
-  if (leftFrameRank !== rightFrameRank) {
-    return leftFrameRank - rightFrameRank;
-  }
-
-  const leftKindRank = MEDIA_DISCOVERY_MANIFEST_KIND_RANK[left.kind] ?? Number.MAX_SAFE_INTEGER;
-  const rightKindRank = MEDIA_DISCOVERY_MANIFEST_KIND_RANK[right.kind] ?? Number.MAX_SAFE_INTEGER;
-  if (leftKindRank !== rightKindRank) {
-    return leftKindRank - rightKindRank;
-  }
-
+  // The top document can request a teaser manifest before an embedded player
+  // loads the stream the user selected. Rank observation time across frames,
+  // then use the local sequence to resolve requests received in the same
+  // millisecond. Frame depth and manifest type do not identify the primary
+  // stream reliably.
   if (left.observedAt !== right.observedAt) {
     return right.observedAt - left.observedAt;
   }

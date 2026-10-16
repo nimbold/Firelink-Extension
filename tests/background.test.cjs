@@ -4740,6 +4740,53 @@ test("media discovery combines the content snapshot and requests using determini
   assert.deepEqual(JSON.parse(JSON.stringify(fixture.sentMessages[0].options)), { frameId: 0 });
 });
 
+test("media discovery prefers the embedded player stream over a top-frame teaser", async () => {
+  const clock = createFakeDiscoveryClock();
+  let payload = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  }, {
+    Date: clock.Date,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+    mediaSnapshotByTab: {
+      18: { urls: [], documentId: "watch-page-document" }
+    }
+  });
+
+  const handoff = vm.runInContext(
+    'fetchMediaForTab({ id: 18, url: "https://example.com/watch" }, { notifyOnFailure: false })',
+    fixture.context
+  );
+  await new Promise(resolve => setImmediate(resolve));
+
+  clock.now(100);
+  emitMediaRequest(fixture, {
+    tabId: 18,
+    frameId: 0,
+    documentId: "watch-page-document",
+    url: "https://cdn.example/previews/teaser.m3u8",
+    requestHeaders: [{ name: "Referer", value: "https://example.com/watch" }]
+  });
+  clock.now(100);
+  emitMediaRequest(fixture, {
+    tabId: 18,
+    frameId: 4,
+    documentId: "embedded-player-document",
+    parentDocumentId: "watch-page-document",
+    url: "https://media.example/player/main.mpd",
+    requestHeaders: [{ name: "Referer", value: "https://player.example/embed/42" }]
+  });
+
+  await clock.advance(8000);
+  const result = await handoff;
+  await result.discoveryDone;
+
+  assert.equal(payload.urls[0], "https://media.example/player/main.mpd");
+  assert.equal(payload.referer, "https://player.example/embed/42");
+});
+
 test("media discovery falls back after eight seconds and cleans up late events", async () => {
   const clock = createFakeDiscoveryClock();
   const payloads = [];
