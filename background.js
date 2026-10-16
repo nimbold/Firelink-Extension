@@ -702,25 +702,12 @@ function mergeMediaDiscoveryCandidate(session, candidate) {
   const previous = session.candidates.get(candidate.url);
   const merged = previous
     ? (() => {
-      // Keep request context attached to the observation that wins the frame
-      // ranking. A URL can be requested by both a player iframe and the top
-      // document; OR-ing topFrame while copying the latest child headers can
-      // otherwise mix identities.
-      const candidateContextWins = candidate.topFrame !== previous.topFrame
-        ? candidate.topFrame
-        : candidate.observedAt > previous.observedAt
-          || (candidate.observedAt === previous.observedAt && candidate.sequence > previous.sequence);
-      return {
-        ...previous,
-        ...candidate,
-        topFrame: previous.topFrame || candidate.topFrame,
-        observedAt: Math.max(previous.observedAt, candidate.observedAt),
-        headers: candidateContextWins ? candidate.headers : previous.headers,
-        referer: candidateContextWins ? candidate.referer : previous.referer,
-        hasObservedReferer: candidateContextWins
-          ? candidate.hasObservedReferer
-          : previous.hasObservedReferer
-      };
+      // Ranking and request context must use the same observation. A URL can
+      // be requested by both a player iframe and the top document; combining
+      // the newer timestamp with older frame headers can break hotlink checks.
+      return compareMediaDiscoveryCandidates(candidate, previous) < 0
+        ? candidate
+        : previous;
     })()
     : candidate;
   session.candidates.set(candidate.url, merged);

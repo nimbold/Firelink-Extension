@@ -5320,7 +5320,7 @@ test("media discovery bounds accepted frame identities", async () => {
   assert.equal(payload.media_protocol_version, 7);
 });
 
-test("media discovery keeps the winning frame context attached to a duplicate URL", async () => {
+test("media discovery keeps the latest observation context attached to a duplicate URL", async () => {
   const clock = createFakeDiscoveryClock();
   let payload = null;
   const fixture = createBackgroundContext(async (_path, _token, request) => {
@@ -5358,7 +5358,7 @@ test("media discovery keeps the winning frame context attached to a duplicate UR
 
   await clock.advance(8000);
   await handoff;
-  assert.equal(payload.headers, "Origin: https://top.example");
+  assert.equal(payload.headers, "Origin: https://child.example");
 });
 
 test("media discovery forwards only safe bounded headers and uses a validated referer", async () => {
