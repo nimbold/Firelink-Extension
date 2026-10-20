@@ -438,8 +438,12 @@ document.addEventListener('DOMContentLoaded', () => {
     void callBrowserApi(chrome.runtime, 'sendMessage', [{ action: 'fetchMediaForActiveTab' }]).then((result) => {
       const response = result.ok ? result.value : null;
       if (!response?.ok) {
-        state.media = response?.ambiguous === true ? 'ambiguous' : 'couldNotSend';
-        fetchMediaBtn.disabled = response?.ambiguous === true;
+        // A missing/error reply from the background does not prove that the
+        // Firelink POST was never accepted. Keep the action fenced until the
+        // user checks Firelink instead of inviting an immediate duplicate.
+        const ambiguous = !result.ok || response?.ambiguous === true;
+        state.media = ambiguous ? 'ambiguous' : 'couldNotSend';
+        fetchMediaBtn.disabled = ambiguous;
         renderMediaStatus();
         return;
       }

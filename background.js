@@ -3866,9 +3866,20 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   }
 
   if (info.menuItemId === "fetch-media-with-firelink") {
+    const isMediaElement = info.mediaType === "video" || info.mediaType === "audio";
+    const directMediaSource = normalizePageMediaURL(info.srcUrl);
     void fetchMediaForTab(tab, {
-      srcUrl: info.linkUrl || info.srcUrl,
-      preferSrcUrl: Boolean(info.linkUrl),
+      // Browser context-menu data can contain both values when a media
+      // element is nested in a link. In video/audio contexts the selected
+      // element's source is the user's media intent; a blob source still
+      // falls back to page discovery.
+      srcUrl: isMediaElement ? info.srcUrl : info.linkUrl || info.srcUrl,
+      // A direct HTTP(S) video/audio element source is explicit user intent,
+      // just like a clicked link. Transient blob URLs cannot be fetched by
+      // yt-dlp, so keep those on the canonical page/discovery path.
+      preferSrcUrl: isMediaElement
+        ? Boolean(directMediaSource)
+        : Boolean(info.linkUrl || directMediaSource),
       notifyOnSuccess: true
     }).catch(error => reportContextMenuHandoffFailure("media context-menu", error));
     return;

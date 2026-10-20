@@ -7,6 +7,110 @@ const vm = require("node:vm");
 const popupI18n = require("../popup/locales.js");
 const popupSource = fs.readFileSync(path.join(__dirname, "..", "popup", "popup.js"), "utf8");
 
+function createPopupFixture() {
+  const elements = new Map();
+  const messages = [];
+  const messageCallbacks = [];
+  const timers = [];
+  let domReady;
+  const runtime = {
+    lastError: null,
+    sendMessage(message, callback) {
+      messages.push(message);
+      messageCallbacks.push(callback);
+    }
+  };
+
+  const makeElement = () => ({
+    addEventListener(type, listener) {
+      this.listeners ||= {};
+      this.listeners[type] = listener;
+    },
+    setAttribute() {},
+    querySelector() { return makeElement(); },
+    replaceChildren() {},
+    classList: { add() {}, remove() {} },
+    dataset: {},
+    style: {},
+    closest() { return null; },
+    hidden: false,
+    checked: false,
+    disabled: false,
+    value: "",
+    textContent: ""
+  });
+
+  const ids = [
+    "global-toggle", "site-toggle", "site-setting-row", "current-hostname",
+    "settings-toggle", "settings-panel", "language-label", "theme-label",
+    "language-select", "theme-select", "connection-status", "extension-token",
+    "save-token-btn", "pairing-section", "pairing-content", "pairing-toggle-btn",
+    "pairing-desc", "fetch-media-btn", "media-status", "fetch-media-label",
+    "capture-downloads-label", "disable-on-site-label", "pairing-label"
+  ];
+  ids.forEach(id => elements.set(id, makeElement()));
+  elements.get("connection-status").querySelector = () => makeElement();
+
+  const context = vm.createContext({
+    console,
+    URL,
+    navigator: { language: "en-US" },
+    document: {
+      activeElement: null,
+      documentElement: { dataset: {}, style: {} },
+      addEventListener(type, listener) {
+        if (type === "DOMContentLoaded") domReady = listener;
+      },
+      getElementById(id) { return elements.get(id); },
+      createElement() { return makeElement(); }
+    },
+    window: {
+      matchMedia() {
+        return { matches: false, addEventListener() {}, addListener() {} };
+      }
+    },
+    FirelinkPopupI18n: popupI18n,
+    FirelinkProtocol: { signedFetch: async () => ({ ok: true }) },
+    chrome: {
+      runtime,
+      tabs: {
+        query(_query, callback) {
+          callback([{ id: 42, url: "https://example.com/watch" }]);
+        }
+      },
+      storage: {
+        local: {
+          get(_keys, callback) {
+            callback({ globalCapture: false, siteToggles: {}, extensionToken: "" });
+          },
+          set(_value, callback) { callback?.(); }
+        },
+        onChanged: { addListener() {} }
+      }
+    },
+    setTimeout(callback, delay) {
+      const timer = { callback, delay, active: true };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimeout(timer) {
+      if (timer) timer.active = false;
+    }
+  });
+
+  vm.runInContext(popupSource, context);
+  domReady();
+
+  return {
+    elements,
+    messages,
+    messageCallbacks,
+    timers,
+    runtime,
+    ready: new Promise(resolve => setImmediate(resolve))
+  };
+}
+
 test("matches Firelink's supported locale and theme sets", () => {
   assert.deepEqual(popupI18n.localeCodes, ["en", "zh-CN", "he", "fa", "uk", "ru"]);
   assert.deepEqual(popupI18n.languagePreferences, ["system", "en", "zh-CN", "he", "fa", "uk", "ru"]);
@@ -82,6 +186,60 @@ test("keeps popup localization and disclosure wiring safe for packaging", () => 
   assert.match(styles, /\.pairing-header-copy\s*\{[\s\S]*flex: 1/);
   assert.match(styles, /overflow-wrap: anywhere/);
   assert.match(styles, /overflow-y: auto/);
+});
+
+test("popup toolbar Fetch media requests an active-tab handoff and prevents ambiguous retries", async () => {
+  const fixture = createPopupFixture();
+  await fixture.ready;
+
+  const fetchButton = fixture.elements.get("fetch-media-btn");
+  const mediaStatus = fixture.elements.get("media-status");
+  assert.equal(fetchButton.disabled, false);
+
+  fetchButton.listeners.click();
+
+  assert.equal(fetchButton.disabled, true);
+  assert.equal(mediaStatus.textContent, popupI18n.catalogs.en.discovering);
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.messages)), [
+    { action: "fetchMediaForActiveTab" }
+  ]);
+
+  fixture.messageCallbacks[0]({ ok: true, ambiguous: false });
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(mediaStatus.textContent, popupI18n.catalogs.en.opened);
+  assert.equal(fetchButton.disabled, true);
+  const successTimer = fixture.timers.find(timer => timer.active && timer.delay === 1600);
+  assert.ok(successTimer, "successful handoff should schedule the status reset");
+  successTimer.callback();
+  assert.equal(fetchButton.disabled, false);
+  assert.equal(mediaStatus.textContent, "example.com");
+
+  fetchButton.listeners.click();
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.messages)), [
+    { action: "fetchMediaForActiveTab" },
+    { action: "fetchMediaForActiveTab" }
+  ]);
+  fixture.messageCallbacks[1]({ ok: false, ambiguous: true });
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(mediaStatus.textContent, popupI18n.catalogs.en.mediaAmbiguous);
+  assert.equal(fetchButton.disabled, true);
+});
+
+test("popup keeps Fetch media disabled when its background reply is lost", async () => {
+  const fixture = createPopupFixture();
+  await fixture.ready;
+
+  const fetchButton = fixture.elements.get("fetch-media-btn");
+  const mediaStatus = fixture.elements.get("media-status");
+  fetchButton.listeners.click();
+  fixture.runtime.lastError = { message: "The message port closed before a response was received." };
+  fixture.messageCallbacks[0]();
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(mediaStatus.textContent, popupI18n.catalogs.en.mediaAmbiguous);
+  assert.equal(fetchButton.disabled, true);
 });
 
 test("persists the first site exclusion when storage has no siteToggles key", async () => {

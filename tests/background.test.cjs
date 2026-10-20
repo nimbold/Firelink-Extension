@@ -4142,6 +4142,8 @@ test("popup media fetch sends the active page without a full cookie header", asy
     media: true,
     media_phase: "initial"
   });
+  assert.equal(payload.cookies, undefined);
+  assert.equal(payload.headers, undefined);
   assert.match(payload.media_handoff_id, /^m-[a-z0-9_-]{1,128}$/);
   assert.equal(requiredProtocolVersion, 7);
   assert.deepEqual(JSON.parse(JSON.stringify(fixture.cookieQueries)), []);
@@ -4178,6 +4180,64 @@ test("media context menu sends the tab page instead of transient media src", asy
   assert.equal(requiredProtocolVersion, 7);
   assert.equal(payload.media_phase, "initial");
   assert.match(payload.media_handoff_id, /^m-[a-z0-9_-]{1,128}$/);
+});
+
+test("media context menu sends a direct HTTP video or audio source", async () => {
+  let payload = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  });
+  const sourceURL = "https://cdn.example/video/episode-1.mp4?token=temporary";
+  const pageURL = "https://example.com/watch/episode-1";
+
+  fixture.listeners.contextMenu(
+    {
+      menuItemId: "fetch-media-with-firelink",
+      srcUrl: sourceURL
+    },
+    { url: pageURL }
+  );
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.deepEqual(JSON.parse(JSON.stringify({
+    urls: payload.urls,
+    referer: payload.referer,
+    media: payload.media,
+    media_phase: payload.media_phase
+  })), {
+    urls: [sourceURL],
+    referer: pageURL,
+    media: true,
+    media_phase: "initial"
+  });
+  assert.equal(payload.cookies, undefined);
+  assert.equal(payload.headers, undefined);
+});
+
+test("media context menu prefers the video element source over its enclosing link", async () => {
+  let payload = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    return { ok: true };
+  });
+  const sourceURL = "https://cdn.example/video/selected-element.mp4";
+  const linkURL = "https://example.com/download/full-episode.mp4";
+
+  fixture.listeners.contextMenu(
+    {
+      menuItemId: "fetch-media-with-firelink",
+      mediaType: "video",
+      linkUrl: linkURL,
+      srcUrl: sourceURL
+    },
+    { url: "https://example.com/watch/episode-1" }
+  );
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.deepEqual(JSON.parse(JSON.stringify(payload.urls)), [sourceURL]);
+  assert.equal(payload.media, true);
+  assert.equal(payload.referer, "https://example.com/watch/episode-1");
 });
 
 test("context-menu media discovery keeps the originating tab port open until handoff", async () => {

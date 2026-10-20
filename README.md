@@ -58,9 +58,10 @@ After installation:
 - Paused Torrent captures that wait for Firelink confirmation before the browser download continues.
 - Batch selected links from page context menus.
 - Optional Firelink folders named from page titles.
-- Explicit **Fetch media** actions from the popup and context menu. During the
-  action, Companion briefly observes requests from the active tab to find one
-  HLS, DASH, or Smooth Streaming manifest when the page exposes one.
+- Explicit **Fetch media** actions from the popup and context menu. On normal
+  pages, the popup and page-based context-menu actions briefly observe the
+  active tab for one HLS, DASH, or Smooth Streaming manifest; a clicked-link
+  context-menu action sends that selected link directly as the media source.
 - Localized popup UI in Firelink's six supported languages, including RTL layout for Hebrew and Persian.
 - Localized browser context menus that follow the selected language.
 - System, light, dark, Dracula, and Nord popup themes.
@@ -73,28 +74,20 @@ After installation:
 - Safer popup state and automatic-capture handling when settings change during a handoff.
 - Dynamic local port discovery across `127.0.0.1:6412-6422`.
 
-The extension deliberately keeps media fetching in the popup and context menu instead of injecting an in-page player button. A user-triggered Fetch
-media action sends the canonical active-tab page URL to Firelink immediately,
-then takes a bounded, eight-second snapshot of the tab's media resource URLs
-and newly observed HTTP(S) requests. If it selects an `.m3u8`, `.mpd`, `.ism`,
-or `.ism/manifest` URL, it sends one signed update tied to the original media
-handoff; otherwise the page URL remains the only request. It does not reload
-the page, fetch manifest bodies or key files, or observe requests continuously.
-Browser sites frequently change their DOM and player behavior, and media can be
-exposed through site-specific, single-page, MSE, or blob-based paths that
-require ongoing maintenance.
+The extension deliberately keeps media fetching in the popup and context menu instead of injecting an in-page player button. On a normal page, the popup button and page-based context-menu action send the active-tab page URL to Firelink immediately, then take a bounded, eight-second snapshot of the tab's media resource URLs and newly observed HTTP(S) requests. If either action selects an `.m3u8`, `.mpd`, `.ism`, or `.ism/manifest` URL, it sends one signed update tied to the original media handoff; otherwise the page URL remains the only request. An active tab whose URL is already a direct manifest is handed off directly. A Fetch media action from a clicked-link context menu sends that selected link as the media source. Video and audio element context menus likewise send a direct HTTP(S) `srcUrl`; a transient `blob:` source falls back to the active page and its bounded discovery path. These direct-source actions use the active page as their referer when available and do not replace the selected source with a manifest discovered from the page. Discovery does not reload the page, fetch manifest bodies or key files, or observe requests continuously. Browser sites frequently change their DOM and player behavior, and media can be exposed through site-specific, single-page, MSE, or blob-based paths that require ongoing maintenance.
 
 On browsers that do not expose a request/document identity to extensions,
-manifest discovery is deliberately disabled for that session and the action
-falls back to the canonical page URL. Direct manifest URLs still work through
-the desktop Add window.
+manifest discovery is deliberately disabled for page-based Fetch actions and
+they use the canonical page URL. Clicked-link actions and direct manifest URLs
+still go through Firelink's Add window.
 
 ## Handoff and privacy
 
 - Ordinary captures may use browser cookies when the browser session requires them.
-- Explicit media requests send the canonical page URL immediately and may send
-  one discovered manifest update tied to the same handoff. They never send a
-  raw browser `Cookie` header.
+- Page-based explicit media requests send the canonical page URL immediately
+  and may send one discovered manifest update tied to the same handoff.
+  Clicked-link Fetch actions send the selected link as the media source. Neither
+  path sends a raw browser `Cookie` header.
 - Discovery may include only `Accept`, `Accept-Language`, `Origin`, and
   `User-Agent`, plus a validated `Referer` field. Credentials, custom token
   headers, cookies, ranges, host headers, and hop-by-hop headers are removed.
@@ -107,10 +100,13 @@ the desktop Add window.
 - Torrent downloads remain paused until Firelink confirms receipt; ambiguous handoffs stay paused to avoid duplicate delivery.
 - Requests stay on the local machine. The extension does not send download data to a remote service.
 
-Two-phase media handoffs require Firelink desktop protocol version 7 or newer.
-The extension rejects an older desktop before sending the media request, so an
-update cannot be misread as a second ordinary download. Ordinary captures keep
-their existing protocol compatibility.
+Two-phase media handoffs use Firelink desktop protocol version 7 or newer. If
+the desktop clearly rejects the initial request as a version mismatch before
+it could have been delivered, Companion retries once with the legacy protocol
+version 4 media payload. That older-desktop path sends the media page without
+the discovery update and stops observing the tab. If delivery of the first
+request is ambiguous, Companion does not retry, avoiding a duplicate handoff.
+Ordinary captures keep their existing protocol compatibility.
 
 Newer Companion and Firelink builds additionally bind signed handoffs to the
 current desktop-server session. Older paired desktop builds continue through
@@ -123,7 +119,9 @@ at document start and browser cookies may be needed for authenticated ordinary
 downloads. It also uses the browser downloads, context-menu, storage, alarm,
 script-injection, notification, cookie, and non-blocking `webRequest` APIs
 listed in `manifest.json`. The webRequest listener records nothing unless you
-invoke Fetch media, and then only for the active tab for at most eight seconds.
+invoke a page-based Fetch media action that starts discovery, and then only
+for the active tab for at most eight seconds. A clicked-link Fetch action does
+not start request discovery.
 Those permissions support the features above; the extension sends handoff data
 only to the paired Firelink app on localhost.
 
