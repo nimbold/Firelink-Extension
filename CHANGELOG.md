@@ -2,6 +2,30 @@
 
 All notable changes to Firelink Companion will be documented in this file.
 
+## [2.2.3] - 2026-10-20
+
+This release pairs with [Firelink 1.5.0](https://github.com/nimbold/Firelink/releases/tag/v1.5.0). It adds browser video discovery for supported pages and improves handoff reliability.
+
+### New features
+
+- **Discover supported video streams from browser pages**
+  - Find HLS, DASH, and Smooth Streaming playlists used by a page's player, including embedded players.
+  - Send the original page to Firelink's Add window so you can review it and choose an available format.
+  - Keep discovery tied to the current tab and the most recently observed player stream.
+
+### Improvements
+
+- Make automatic browser-download handoffs more reliable in Firefox.
+
+### Fixes
+
+- Prevent repeated media handoffs when the browser does not receive a timely response from Firelink.
+- Preserve the selected video or audio link when sending it from the browser context menu.
+
+### Compatibility
+
+- Use [Firelink 1.5.0](https://github.com/nimbold/Firelink/releases/tag/v1.5.0) with Companion 2.2.3.
+
 ## [2.2.2] - 2026-09-08
 
 This release pairs with [Firelink 1.4.2](https://github.com/nimbold/Firelink/releases/tag/v1.4.2). It brings the published Microsoft Edge Add-ons listing together with important Torrent handoff fixes from the 2.2.1 release candidate.
