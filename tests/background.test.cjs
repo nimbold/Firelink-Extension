@@ -387,6 +387,9 @@ function createBackgroundContext(signedFetch, options = {}) {
       },
       create(details, callback) {
         createdTabs.push(details);
+        if (options.activateCreatedTabBeforeCallback && details.active) {
+          listeners.tabActivated?.({ tabId: createdTabs.length });
+        }
         const complete = () => {
           chrome.runtime.lastError = options.protocolError
             ? { message: options.protocolError }
@@ -399,7 +402,9 @@ function createBackgroundContext(signedFetch, options = {}) {
             ? Promise.reject(new Error(options.protocolError))
             : Promise.resolve({ id: createdTabs.length });
         }
-        if (options.deferTabCreate) {
+        if (options.tabCreationGate) {
+          options.tabCreationGate.then(complete);
+        } else if (options.deferTabCreate) {
           Promise.resolve().then(complete);
         } else {
           complete();
@@ -5671,4 +5676,208 @@ test("keeps a paused recovery record when the browser reports in-progress state"
   await new Promise(resolve => setImmediate(resolve));
 
   assert.equal(fixture.getPendingCaptures()["58"]?.phase, "uncertain");
+});
+
+test("media context menu ignores non-HTTP linkUrl and still runs page media discovery", async () => {
+  const clock = createFakeDiscoveryClock();
+  const calls = [];
+  const payloads = [];
+  const fixture = createBackgroundContext(async (path, _token, request) => {
+    calls.push(path);
+    payloads.push(request.payload);
+    return { ok: true };
+  }, {
+    Date: clock.Date,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+    mediaDocumentIdByTab: { 31: "document-31" }
+  });
+
+  fixture.listeners.contextMenu(
+    {
+      menuItemId: "fetch-media-with-firelink",
+      linkUrl: "javascript:void(0)"
+    },
+    {
+      id: 31,
+      windowId: 2,
+      url: "https://example.com/watch"
+    }
+  );
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.deepEqual(calls, ["/download"]);
+  assert.equal(payloads[0].urls[0], "https://example.com/watch");
+  assert.equal(payloads[0].media, true);
+  assert.equal(payloads[0].media_phase, "initial");
+
+  emitMediaRequest(fixture, {
+    tabId: 31,
+    windowId: 2,
+    frameId: 0,
+    documentId: "document-31",
+    url: "https://cdn.example/stream.m3u8"
+  });
+
+  await clock.advance(8000);
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.deepEqual(calls, ["/download", "/media-discovery"]);
+  assert.equal(payloads[1].urls[0], "https://cdn.example/stream.m3u8");
+  assert.equal(payloads[1].phase, "discovered");
+});
+
+test("cold-start media fetch does not cancel discovery when firelink://launch tab activates", async () => {
+  const clock = createFakeDiscoveryClock();
+  const calls = [];
+  const payloads = [];
+  let initialDownload = true;
+  const fixture = createBackgroundContext(async (path, _token, request) => {
+    calls.push(path);
+    if (path === "/download" && initialDownload) {
+      initialDownload = false;
+      throw { serverReached: false, requestMayHaveBeenSent: false };
+    }
+    if (path !== "/ping") {
+      payloads.push(request.payload);
+    }
+    return { ok: true };
+  }, {
+    Date: clock.Date,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+    activateCreatedTabBeforeCallback: true,
+    mediaDocumentIdByTab: { 32: "document-32" }
+  });
+
+  const handoffPromise = vm.runInContext(
+    'fetchMediaForTab({ id: 32, windowId: 2, url: "https://example.com/watch" }, { notifyOnFailure: false })',
+    fixture.context
+  );
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(fixture.createdTabs.length, 1);
+  assert.equal(fixture.createdTabs[0].url, "firelink://launch");
+
+  // The launch session yields once to let concurrent handoffs join before it
+  // closes its tab and resolves the accepted handoff.
+  await clock.advance(0);
+  const result = await handoffPromise;
+  assert.equal(result.accepted, true);
+
+  emitMediaRequest(fixture, {
+    tabId: 32,
+    windowId: 2,
+    frameId: 0,
+    documentId: "document-32",
+    url: "https://cdn.example/cold-start.m3u8"
+  });
+
+  await clock.advance(8000);
+  await result.discoveryDone;
+
+  assert.deepEqual(calls, ["/download", "/ping", "/download", "/media-discovery"]);
+  assert.equal(payloads[1].urls[0], "https://cdn.example/cold-start.m3u8");
+  assert.equal(payloads[1].phase, "discovered");
+});
+
+test("launch-tab creation only replays real activations against discovery sessions present at the time", async () => {
+  const clock = createFakeDiscoveryClock();
+  let finishCreatingTab;
+  const tabCreationGate = new Promise(resolve => { finishCreatingTab = resolve; });
+  const fixture = createBackgroundContext(async () => ({ ok: true }), {
+    Date: clock.Date,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+    tabCreationGate,
+    activateCreatedTabBeforeCallback: true
+  });
+  const previous = vm.runInContext(
+    'startMediaDiscoverySession({ tabId: 32, fallbackURL: "https://example.com/previous" })',
+    fixture.context
+  );
+  const launch = vm.runInContext('createLaunchTab()', fixture.context);
+  fixture.listeners.tabActivated({ tabId: 33 });
+  const current = vm.runInContext(
+    'startMediaDiscoverySession({ tabId: 34, fallbackURL: "https://example.com/current" })',
+    fixture.context
+  );
+  finishCreatingTab();
+
+  assert.equal(await launch, 1);
+  assert.equal(previous.invalidated, true);
+  assert.equal(current.invalidated, false);
+  await clock.advance(8000);
+});
+
+test("startup 503 media handoff falls back once to legacy media when desktop reports protocol 4", async () => {
+  const calls = [];
+  let firstAttempt = true;
+  const fixture = createBackgroundContext(async (path, _token, request) => {
+    calls.push([path, request?.requiredProtocolVersion, request?.payload]);
+    if (firstAttempt) {
+      firstAttempt = false;
+      throw { serverReached: true, status: 503, requestMayHaveBeenSent: false };
+    }
+    if (path === "/download" && request?.requiredProtocolVersion === 7) {
+      throw {
+        code: "protocol-version",
+        serverReached: true,
+        status: 426,
+        requestMayHaveBeenSent: false
+      };
+    }
+    return { ok: true };
+  });
+
+  const accepted = await vm.runInContext(
+    'sendToFirelink(["https://example.com/watch"], "https://example.com/watch", { media: true, mediaHandoffId: "m-503-legacy", mediaPhase: "initial", notifyOnFailure: false })',
+    fixture.context
+  );
+
+  assert.equal(accepted, true);
+  assert.deepEqual(calls.map(([path, version]) => [path, version]), [
+    ["/download", 7],
+    ["/download", 7],
+    ["/download", 4]
+  ]);
+  assert.equal(calls[2][2].media, true);
+  assert.equal(calls[2][2].media_handoff_id, undefined);
+});
+
+test("download-with-firelink context menu sends magnet link to Add window without cookies", async () => {
+  let payload = null;
+  let requiredProtocolVersion = null;
+  const fixture = createBackgroundContext(async (_path, _token, request) => {
+    payload = request.payload;
+    requiredProtocolVersion = request.requiredProtocolVersion;
+    return { ok: true };
+  }, {
+    cookiesByUrl: {
+      "https://example.com/torrents": [{ name: "session", value: "secret" }]
+    }
+  });
+
+  const magnetURL = "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=Example";
+  fixture.listeners.contextMenu(
+    {
+      menuItemId: "download-with-firelink",
+      linkUrl: magnetURL
+    },
+    {
+      url: "https://example.com/torrents",
+      cookieStoreId: "firefox-default"
+    }
+  );
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(requiredProtocolVersion, 5);
+  assert.deepEqual(JSON.parse(JSON.stringify(payload)), {
+    urls: [magnetURL],
+    referer: "https://example.com/torrents",
+    silent: false,
+    headers: "User-Agent: Firefox Test",
+    media: false,
+    torrent: true
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.cookieQueries)), []);
 });

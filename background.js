@@ -256,7 +256,11 @@ function registerContextMenus() {
       const pendingCreates = [];
       for (const item of items) {
         try {
-          const result = chrome.contextMenus.create(item);
+          const result = chrome.contextMenus.create(item, () => {
+            if (chrome.runtime?.lastError) {
+              console.error("Firelink context menu registration failed:", chrome.runtime.lastError);
+            }
+          });
           if (result && typeof result.catch === "function") {
             pendingCreates.push(result.catch(error => {
               console.error("Firelink context menu registration failed:", error);
@@ -1197,11 +1201,11 @@ function uninstallMediaDiscoveryObserver(tabId) {
   }
 }
 
-function cancelMediaDiscoveryOnActivation(activeInfo) {
-  const activeTabId = mediaDiscoveryTabId(activeInfo?.tabId);
-  if (activeTabId === null) {
-    return;
-  }
+const activeLaunchTabIds = new Set();
+let creatingLaunchTabCount = 0;
+const deferredActivationSessions = new Map();
+
+function cancelMediaDiscoveryForOtherTabs(activeTabId) {
   for (const session of activeMediaDiscoverySessions.values()) {
     // Tab ids are browser-global. Keeping only the newly active tab also
     // handles focus moving to another window; a session from that window is
@@ -1211,6 +1215,30 @@ function cancelMediaDiscoveryOnActivation(activeInfo) {
     }
     cancelMediaDiscoverySession(session);
   }
+}
+
+function cancelMediaDiscoveryOnActivation(activeInfo) {
+  const activeTabId = mediaDiscoveryTabId(activeInfo?.tabId);
+  if (activeTabId === null) {
+    return;
+  }
+  if (activeLaunchTabIds.has(activeTabId)) {
+    return;
+  }
+  if (creatingLaunchTabCount > 0) {
+    // Only sessions that existed when this activation fired can be
+    // invalidated by it. Discovery may start while tabs.create is pending.
+    for (const session of activeMediaDiscoverySessions.values()) {
+      if (session.tabId === activeTabId) continue;
+      const tabIds = deferredActivationSessions.get(session) || new Set();
+      // One tab can be the launch tab. Two different foreign tab IDs
+      // are enough to prove an actual switch away in this launch session.
+      if (tabIds.size < 2) tabIds.add(activeTabId);
+      deferredActivationSessions.set(session, tabIds);
+    }
+    return;
+  }
+  cancelMediaDiscoveryForOtherTabs(activeTabId);
 }
 
 if (chrome.tabs?.onUpdated?.addListener) {
@@ -1307,15 +1335,41 @@ function notifyNoSelectedLinks() {
 }
 
 function createLaunchTab() {
+  creatingLaunchTabCount += 1;
   return callExtensionApi(chrome.tabs, "create", [{ url: LAUNCH_URL, active: true }])
-    .then(result => result.ok ? result.value?.id ?? null : null);
+    .then(result => {
+      const tabId = result.ok ? mediaDiscoveryTabId(result.value?.id) : null;
+      if (tabId !== null) {
+        activeLaunchTabIds.add(tabId);
+      }
+      return tabId;
+    })
+    .finally(() => {
+      creatingLaunchTabCount = Math.max(0, creatingLaunchTabCount - 1);
+      if (creatingLaunchTabCount === 0) {
+        // Preserve real tab switches observed during creation. Switching
+        // away invalidates discovery even if the initiating tab regains focus.
+        for (const [session, activatedTabs] of deferredActivationSessions) {
+          if (activeMediaDiscoverySessions.get(session.tabId) !== session) continue;
+          if ([...activatedTabs].some(activeTabId => !activeLaunchTabIds.has(activeTabId))) {
+            cancelMediaDiscoverySession(session);
+          }
+        }
+        deferredActivationSessions.clear();
+      }
+    });
 }
 
 function closeLaunchTab(tabId) {
-  if (tabId === null || tabId === undefined || !chrome.tabs?.remove) {
+  if (tabId === null || tabId === undefined) {
     return Promise.resolve();
   }
-  return callExtensionApi(chrome.tabs, "remove", [tabId]).then(() => {});
+  if (!chrome.tabs?.remove) {
+    activeLaunchTabIds.delete(tabId);
+    return Promise.resolve();
+  }
+  return callExtensionApi(chrome.tabs, "remove", [tabId])
+    .finally(() => { activeLaunchTabIds.delete(tabId); });
 }
 
 function delay(ms) {
@@ -2541,7 +2595,14 @@ async function sendToFirelink(urls, referer = "", options = {}) {
             token: cachedSettings.extensionToken,
             payload,
             requiredProtocolVersion,
-            path: handoffPath
+            path: handoffPath,
+            legacyPath: legacyMediaFallbackAllowed ? "/download" : undefined,
+            legacyPayload: legacyMediaFallbackAllowed ? legacyMediaPayload(payload) : undefined,
+            legacyRequiredProtocolVersion: legacyMediaFallbackAllowed
+              ? LEGACY_MEDIA_FETCH_PROTOCOL_VERSION
+              : undefined,
+            onLegacyMediaFallback: options.onLegacyMediaFallback,
+            onRequestMayHaveBeenSent: options.onRequestMayHaveBeenSent
           },
           Date.now() + LAUNCH_TIMEOUT_MS
         );
@@ -3867,19 +3928,17 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 
   if (info.menuItemId === "fetch-media-with-firelink") {
     const isMediaElement = info.mediaType === "video" || info.mediaType === "audio";
-    const directMediaSource = normalizePageMediaURL(info.srcUrl);
+    const selectedSource = isMediaElement ? info.srcUrl : info.linkUrl || info.srcUrl;
+    const directMediaSource = normalizePageMediaURL(selectedSource);
     void fetchMediaForTab(tab, {
       // Browser context-menu data can contain both values when a media
       // element is nested in a link. In video/audio contexts the selected
       // element's source is the user's media intent; a blob source still
-      // falls back to page discovery.
-      srcUrl: isMediaElement ? info.srcUrl : info.linkUrl || info.srcUrl,
-      // A direct HTTP(S) video/audio element source is explicit user intent,
-      // just like a clicked link. Transient blob URLs cannot be fetched by
-      // yt-dlp, so keep those on the canonical page/discovery path.
-      preferSrcUrl: isMediaElement
-        ? Boolean(directMediaSource)
-        : Boolean(info.linkUrl || directMediaSource),
+      // falls back to page discovery. Only treat an HTTP(S) target as a
+      // direct source; non-HTTP(S) links (e.g. javascript:, magnet:) must
+      // fall back to canonical page discovery.
+      srcUrl: selectedSource,
+      preferSrcUrl: Boolean(directMediaSource),
       notifyOnSuccess: true
     }).catch(error => reportContextMenuHandoffFailure("media context-menu", error));
     return;

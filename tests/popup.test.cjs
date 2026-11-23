@@ -7,7 +7,7 @@ const vm = require("node:vm");
 const popupI18n = require("../popup/locales.js");
 const popupSource = fs.readFileSync(path.join(__dirname, "..", "popup", "popup.js"), "utf8");
 
-function createPopupFixture() {
+function createPopupFixture({ activeTabs = [{ id: 42, url: "https://example.com/watch" }] } = {}) {
   const elements = new Map();
   const messages = [];
   const messageCallbacks = [];
@@ -75,7 +75,7 @@ function createPopupFixture() {
       runtime,
       tabs: {
         query(_query, callback) {
-          callback([{ id: 42, url: "https://example.com/watch" }]);
+          callback(activeTabs);
         }
       },
       storage: {
@@ -225,6 +225,19 @@ test("popup toolbar Fetch media requests an active-tab handoff and prevents ambi
 
   assert.equal(mediaStatus.textContent, popupI18n.catalogs.en.mediaAmbiguous);
   assert.equal(fetchButton.disabled, true);
+});
+
+test("popup disables Fetch media on tabs with embedded URL credentials", async () => {
+  const fixture = createPopupFixture({
+    activeTabs: [{ id: 10, url: "https://user:pass@example.com/video" }]
+  });
+  await fixture.ready;
+  await new Promise(resolve => setImmediate(resolve));
+
+  const fetchButton = fixture.elements.get("fetch-media-btn");
+  const mediaStatus = fixture.elements.get("media-status");
+  assert.equal(fetchButton.disabled, true);
+  assert.equal(mediaStatus.textContent, popupI18n.catalogs.en.openWebPage);
 });
 
 test("popup keeps Fetch media disabled when its background reply is lost", async () => {
