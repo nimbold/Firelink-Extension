@@ -20,9 +20,9 @@ Captured links open Firelink's Add window first. You can review them before star
 
 ## Status
 
-The Companion package is **2.2.3** and is compatible with [Firelink `1.5.0`](https://github.com/nimbold/Firelink/releases/tag/v1.5.0).
+The Companion package is **2.2.4** and is compatible with [Firelink `1.5.1`](https://github.com/nimbold/Firelink/releases/tag/v1.5.1).
 
-Version 2.2.3 adds browser video discovery for supported pages, including embedded players, and improves media handoff reliability. See the [latest Companion release](https://github.com/nimbold/Firelink-Extension/releases/latest) for current packages.
+Version 2.2.4 improves browser media discovery and handoff reliability during Firelink startup. See the [latest Companion release](https://github.com/nimbold/Firelink-Extension/releases/latest) for current packages.
 
 The project is actively maintained. Use the [latest Companion release](https://github.com/nimbold/Firelink-Extension/releases/latest) with the [latest Firelink release](https://github.com/nimbold/Firelink/releases/latest).
 
@@ -74,7 +74,11 @@ After installation:
 - Safer popup state and automatic-capture handling when settings change during a handoff.
 - Dynamic local port discovery across `127.0.0.1:6412-6422`.
 
-The extension deliberately keeps media fetching in the popup and context menu instead of injecting an in-page player button. On a normal page, the popup button and page-based context-menu action send the active-tab page URL to Firelink immediately, then take a bounded, eight-second snapshot of the tab's media resource URLs and newly observed HTTP(S) requests. If either action selects an `.m3u8`, `.mpd`, `.ism`, or `.ism/manifest` URL, it sends one signed update tied to the original media handoff; otherwise the page URL remains the only request. An active tab whose URL is already a direct manifest is handed off directly. A Fetch media action from a clicked-link context menu sends that selected link as the media source. Video and audio element context menus likewise send a direct HTTP(S) `srcUrl`; a transient `blob:` source falls back to the active page and its bounded discovery path. These direct-source actions use the active page as their referer when available and do not replace the selected source with a manifest discovered from the page. Discovery does not reload the page, fetch manifest bodies or key files, or observe requests continuously. Browser sites frequently change their DOM and player behavior, and media can be exposed through site-specific, single-page, MSE, or blob-based paths that require ongoing maintenance.
+Media fetching stays in the popup and context menu rather than injecting an in-page player button:
+
+- **Page actions** (popup button or page context menu) send the active tab URL to Firelink immediately, then briefly observe the tab (up to eight seconds) for an `.m3u8`, `.mpd`, `.ism`, or `.ism/manifest` stream. If one is found, a signed update is sent for the same handoff.
+- **Direct link and media element actions** send the selected link or HTTP(S) `srcUrl` directly with the active page as referer; `blob:` sources fall back to page discovery.
+- **No page reload or continuous tracking:** Discovery never reloads the page, fetches manifest bodies or keys, or monitors requests outside that brief window. Direct manifest tabs are handed off immediately.
 
 On browsers that do not expose a request/document identity to extensions,
 manifest discovery is deliberately disabled for page-based Fetch actions and

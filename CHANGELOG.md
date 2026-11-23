@@ -2,6 +2,24 @@
 
 All notable changes to Firelink Companion will be documented in this file.
 
+## [2.2.4] - 2026-11-23
+
+This patch release pairs with [Firelink 1.5.1](https://github.com/nimbold/Firelink/releases/tag/v1.5.1) and improves browser media discovery and handoff reliability while Firelink is starting up.
+
+### Improvements
+
+- Keep toolbar **Fetch media** availability aligned with what the background handler supports on the active tab.
+- Fall back to page-level media discovery when a clicked video or audio element uses an unsupported source such as `blob:`.
+
+### Fixes
+
+- Keep active-tab media discovery alive when Firelink launches a temporary handoff tab, and only restore tabs for the affected handoff session.
+- Preserve compatibility fallback for media handoffs when Firelink is still starting up.
+
+### Compatibility
+
+- Use [Firelink 1.5.1](https://github.com/nimbold/Firelink/releases/tag/v1.5.1) with Companion 2.2.4.
+
 ## [2.2.3] - 2026-10-20
 
 This release pairs with [Firelink 1.5.0](https://github.com/nimbold/Firelink/releases/tag/v1.5.0). It adds browser video discovery for supported pages and improves handoff reliability.
