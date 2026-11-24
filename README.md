@@ -20,15 +20,11 @@ Captured links open Firelink's Add window first. You can review them before star
 
 ## Status
 
-The Companion package is **2.2.4** and is compatible with [Firelink `1.5.1`](https://github.com/nimbold/Firelink/releases/tag/v1.5.1).
+Firelink Companion `2.2.5` is the latest release and pairs with [Firelink `1.5.2`](https://github.com/nimbold/Firelink/releases/tag/v1.5.2).
 
-Version 2.2.4 improves browser media discovery and handoff reliability during Firelink startup. See the [latest Companion release](https://github.com/nimbold/Firelink-Extension/releases/latest) for current packages.
+Use the [latest Companion release](https://github.com/nimbold/Firelink-Extension/releases/latest) with the [latest Firelink release](https://github.com/nimbold/Firelink/releases/latest).
 
-The project is actively maintained. Use the [latest Companion release](https://github.com/nimbold/Firelink-Extension/releases/latest) with the [latest Firelink release](https://github.com/nimbold/Firelink/releases/latest).
-
-Remote Torrent and magnet handoff uses protocol version 5. Browser-local
-Torrent attachments use the binary handoff contract and require a Firelink
-build that supports it.
+Remote Torrent and magnet handoff uses protocol version 5. Browser-local Torrent attachments use the binary handoff contract and require a compatible Firelink build.
 
 ## Installation
 

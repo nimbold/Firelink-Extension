@@ -2,6 +2,14 @@
 
 All notable changes to Firelink Companion will be documented in this file.
 
+## [2.2.5] - 2026-11-24
+
+This patch release pairs with [Firelink 1.5.2](https://github.com/nimbold/Firelink/releases/tag/v1.5.2) and updates documentation and compatibility metadata with no functional extension changes since 2.2.4.
+
+### Compatibility
+
+- Use [Firelink 1.5.2](https://github.com/nimbold/Firelink/releases/tag/v1.5.2) with Companion 2.2.5.
+
 ## [2.2.4] - 2026-11-23
 
 This patch release pairs with [Firelink 1.5.1](https://github.com/nimbold/Firelink/releases/tag/v1.5.1) and improves browser media discovery and handoff reliability while Firelink is starting up.
